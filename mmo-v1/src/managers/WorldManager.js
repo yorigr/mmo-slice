@@ -28,11 +28,6 @@ class WorldManager {
     const dtSec = (now - this._lastTick) / 1000;
     this._lastTick = now;
 
-    // TODO: resolver casts prontos
-    // TODO: regen de mana/stamina
-    // TODO: IA de monstros (a cada MONSTER_AI_TICK_MS)
-    // TODO: despawn de itens vencidos
-
     this._broadcast(now);
     this.events = this._newEvents();
   }
@@ -42,7 +37,9 @@ class WorldManager {
     const playerSnap = [];
     for (const p of this.players.values()) {
       playerSnap.push({
-        id: p.id, name: p.name, class: p.class,
+        id: p.id, name: p.name,
+        class: p.class,          // mantido para o cliente browser HTML
+        playerClass: p.class,    // alias sem palavra reservada — usado pelo cliente Unity (C# não aceita campo 'class')
         x: Math.round(p.x), y: Math.round(p.y),
         hp: Math.round(p.hp), maxHp: p.maxHp,
         mana: Math.round(p.mana), maxMana: p.maxMana,
