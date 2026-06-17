@@ -22,8 +22,9 @@ class PlayerManager {
       id: socketId,
       name: name || 'Player',
       class: playerClass,
-      x: Math.random() * (MAP_W - 200) + 100,
-      y: Math.random() * (MAP_H - 200) + 100,
+      // Spawn na zona central (200px de raio ao redor do centro do mapa).
+      x: MAP_W / 2 + (Math.random() - 0.5) * 400,
+      y: MAP_H / 2 + (Math.random() - 0.5) * 400,
       hp: maxHp, maxHp,
       mana: maxMana, maxMana,
       stamina: MAX_STAMINA, maxStamina: MAX_STAMINA,
@@ -94,13 +95,14 @@ class PlayerManager {
     setTimeout(() => {
       if (!this.world.getPlayer(player.id)) return;
       const mod = CLASS_MODIFIERS[player.class] || CLASS_MODIFIERS.warrior;
+      // Respawn também na zona central
       Object.assign(player, {
         hp: Math.round(MAX_HP * mod.hp),
         mana: Math.round(MAX_MANA * mod.mana),
         dead: false,
         casting: null,
-        x: Math.random() * (MAP_W - 200) + 100,
-        y: Math.random() * (MAP_H - 200) + 100,
+        x: MAP_W / 2 + (Math.random() - 0.5) * 400,
+        y: MAP_H / 2 + (Math.random() - 0.5) * 400,
       });
     }, RESPAWN_MS);
   }
