@@ -1,0 +1,66 @@
+# Dependências
+**/node_modules/
+
+# Ambiente
+**/.env
+**/.env.local
+
+# Node portátil (binário grande — não vai no repo)
+mmo-slice-v2/mmo-slice/node-v24.16.0-win-x64/
+
+# Unity
+unity-client/Library/
+unity-client/Temp/
+unity-client/Logs/
+unity-client/obj/
+unity-client/Build/
+unity-client/Builds/
+unity-client/.vs/
+unity-client/*.csproj
+unity-client/*.sln
+unity-client/*.userprefs
+
+# Logs e lixo
+*.log
+*.txt
+diagnostico*
+progress*
+retry-log*
+status-final*
+system-install*
+install2-result*
+unity-check*
+
+# Instaladores Unity (podem ter sobrado)
+INSTALAR-COMO-ADMIN.bat
+baixar-unity-hub.ps1
+buscar-unity.ps1
+check-*.bat
+criar-projeto-unity.bat
+desbloquear-*.ps1
+diagnostico-unity.bat
+encontrar-unity.bat
+files.zip
+find-unity-url.ps1
+instalar-*.bat
+instalar-*.ps1
+install-as-system.bat
+kill-installer-open-hub.bat
+listar-unity.bat
+mata-instalador.ps1
+mmo-slice-v2.zip
+nsis-runner.bat
+run-buscar.bat
+run-desbloq.bat
+run-mata.bat
+run-ps*.bat
+run-status.bat
+status-check.ps1
+status-final.bat
+ver-versoes-unity.bat
+verificar-unity.bat
+limpar-lixo.bat
+
+# Arquivos OS
+.DS_Store
+Thumbs.db
