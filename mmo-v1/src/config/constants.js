@@ -6,7 +6,7 @@
 module.exports = {
 
   // ----- Servidor -----
-  TIAK_RATE: 20,          // Hz — atualizações por segundo
+  TICK_RATE: 20,          // Hz — atualizações por segundo
   PORT: process.env.PORT || 3000,
 
   // ----- Mundo -----
