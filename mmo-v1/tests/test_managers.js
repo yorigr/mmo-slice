@@ -130,7 +130,7 @@ test('createPlayer — all 5 classes spawn without error', () => {
   });
 });
 
-test('handleMove — formal movement accepted', () => {
+test('handleMove — normal movement accepted', () => {
   const world = new MockWorld();
   const pm = new PlayerManager(world);
   const p  = pm.createPlayer('s2', { name: 'Mover', playerClass: 'warrior' });
@@ -183,7 +183,7 @@ test('regenTick — dead player does not regen', () => {
   assert.strictEqual(p.mana, 5, 'dead player mana should not change');
 });
 
-test('regenTick — does not exceed maxMana', () => {
+test('regenTick — mana does not exceed maxMana', () => {
   const world = new MockWorld();
   const pm = new PlayerManager(world);
   const p  = pm.createPlayer('s7', { name: 'Cap', playerClass: 'warrior' });
@@ -302,8 +302,11 @@ test('applyDamage — interruptible cast is cancelled', () => {
 
 test('applyDamage — non-interruptible cast survives damage', () => {
   const { world, pm, ce } = makeCombatSetup();
+  // warrior_slash is instant so use warrior_shield_bash which is non-interruptible but instant
+  // Instead: manually set a non-interruptible cast
   const target = pm.createPlayer('t3', { name: 'Tanky', playerClass: 'warrior' });
   target.casting = { abilityId: 'warrior_shield_bash', endsAt: Date.now() + 5000, total: 0, tx: 0, ty: 0 };
+  // warrior_shield_bash: interruptible = false
   ce.applyDamage(target, 5, null);
   assert.ok(target.casting !== null, 'non-interruptible cast should survive');
 });
@@ -330,13 +333,15 @@ test('resolveDueCasts — fires ability after castTime', () => {
   const { world, pm, ce } = makeCombatSetup();
   const caster = pm.createPlayer('rc1', { name: 'Caster', playerClass: 'warrior' });
   const victim = pm.createPlayer('rc2', { name: 'Victim', playerClass: 'warrior' });
+  // Place them close together
   caster.x = 100; caster.y = 100;
-  victim.x = 120; victim.y = 100;
+  victim.x = 120; victim.y = 100; // within melee range (65px)
   caster.stamina = 1000;
 
   ce.startCast('rc1', 'warrior_heavy_blow', victim.x, victim.y);
   assert.ok(caster.casting, 'should be casting');
 
+  // Force cast to be due
   caster.casting.endsAt = Date.now() - 1;
   const hpBefore = victim.hp;
   ce.resolveDueCasts(Date.now());
@@ -396,28 +401,30 @@ test('spawnRandom — creates a monster', () => {
   assert.ok(world.monsters.has(m.id));
 });
 
-test('aiTick — aggros nearby player', () => {
+test('aiTick — monster aggros nearby player', () => {
   const { world, pm, mm } = makeMonsterSetup();
   const player = pm.createPlayer('p1', { name: 'Target', playerClass: 'warrior' });
   player.x = 150; player.y = 150;
 
-  const monster = mm.spawn('goblin', { x: 160, y: 160 });
+  const monster = mm.spawn('goblin', { x: 160, y: 160 }); // within AGGRO_RANGE (200)
   assert.strictEqual(monster.state, 'idle');
 
+  // aiTick requires _aiTimer to exceed MONSTER_AI_TICK_MS (500ms)
+  // Force it:
   mm._aiTimer = 1000;
   mm.aiTick(Date.now());
 
-  assert.strictEqual(monster.state, 'aggro');
+  assert.strictEqual(monster.state, 'aggro', `monster should be in aggro state, got ${monster.state}`);
   assert.strictEqual(monster.target, 'p1');
 });
 
-test('aiTick — removes dead monster', () => {
+test('aiTick — monster removes self when hp <= 0', () => {
   const { world, mm } = makeMonsterSetup();
   const m = mm.spawn('goblin', { x: 100, y: 100 });
   m.hp = 0;
   mm._aiTimer = 1000;
   mm.aiTick(Date.now());
-  assert.ok(!world.monsters.has(m.id));
+  assert.ok(!world.monsters.has(m.id), 'dead monster should be removed');
 });
 
 test('aiTick — monster returns to spawn when leashed', () => {
@@ -428,16 +435,20 @@ test('aiTick — monster returns to spawn when leashed', () => {
   const monster = mm.spawn('goblin', { x: 100, y: 100 });
   monster.state  = 'aggro';
   monster.target = 'p2';
-  monster.x = monster.spawnX + 700;
+  // Move monster far from spawn
+  monster.x = monster.spawnX + 700; // > LEASH_RANGE (600)
   monster.y = monster.spawnY;
 
   mm._aiTimer = 1000;
   mm.aiTick(Date.now());
 
-  assert.strictEqual(monster.state, 'returning');
+  assert.strictEqual(monster.state, 'returning', `monster should leash, got ${monster.state}`);
 });
 
-console.log('\nM');
-console.log(`Resultado: ${passed} passou | ${failed} falhou`);
-console.log('M\n');
+// ============================================================
+// SUMMARY
+// ============================================================
+console.log('\n══════════════════════════════════════');
+console.log(`  Resultado: ${passed} passou · ${failed} falhou`);
+console.log('══════════════════════════════════════\n');
 if (failed > 0) process.exit(1);
