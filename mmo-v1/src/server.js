@@ -84,6 +84,9 @@ io.on('connection', (socket) => {
     else socket.emit('chat:message', { channel, ...payload }); // fallback
   });
 
+  // Ping para medição de RTT — usado pelo Unity NetworkManager e pelo cliente browser
+  socket.on('ping', (ts) => socket.emit('pong', ts));
+
   socket.on('disconnect', () => {
     players.removePlayer(socket.id);
     console.log(`[-] ${socket.id}`);
