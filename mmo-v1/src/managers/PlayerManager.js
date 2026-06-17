@@ -5,6 +5,8 @@ const {
   STAMINA_REGEN_PER_SEC, RESPAWN_MS, MAP_W, MAP_H, CLASS_MODIFIERS,
 } = require('../config/constants');
 
+const PLAYER_RADIUS = 22; // raio de colisão player-player
+
 class PlayerManager {
   constructor(world) {
     this.world = world;
@@ -64,6 +66,24 @@ class PlayerManager {
     } else {
       p.x = tx; p.y = ty;
     }
+    this._resolveCollisions(p);
+  }
+
+  // Empurra jogadores que se sobrepõem (colisão física simples)
+  _resolveCollisions(mover) {
+    const minDist = PLAYER_RADIUS * 2;
+    for (const other of this.world.players.values()) {
+      if (other.id === mover.id || other.dead) continue;
+      const dx = mover.x - other.x;
+      const dy = mover.y - other.y;
+      const d = Math.hypot(dx, dy);
+      if (d < minDist && d > 0) {
+        const overlap = (minDist - d) / 2;
+        const nx = dx / d, ny = dy / d;
+        mover.x = Math.max(0, Math.min(MAP_W, mover.x + nx * overlap * 2));
+        mover.y = Math.max(0, Math.min(MAP_H, mover.y + ny * overlap * 2));
+      }
+    }
   }
 
   removePlayer(socketId) {
@@ -82,7 +102,7 @@ class PlayerManager {
         x: Math.random() * (MAP_W - 200) + 100,
         y: Math.random() * (MAP_H - 200) + 100,
       });
-    }, RESPAP�_MS);
+    }, RESPAWN_MS);
   }
 
   // Chamado a cada tick pelo WorldManager
