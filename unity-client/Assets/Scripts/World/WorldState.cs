@@ -47,6 +47,21 @@ namespace MMORPG.World
         public float HpPercent => maxHp > 0 ? (float)hp / maxHp : 0f;
     }
 
+    /// <summary>
+    /// Dados de um monstro, recebidos em world:update.
+    /// Coordenadas em espaço Unity (já convertidas de pixels).
+    /// </summary>
+    [Serializable]
+    public struct RemoteMonster
+    {
+        public string id;
+        public string type;   // "wolf", "goblin", etc
+        public float  x;      // Unidades Unity (= serverX / 50)
+        public float  z;      // Unidades Unity (= serverY / 50)
+        public int    hp;
+        public int    maxHp;
+    }
+
     // ─── MonoBehaviour ────────────────────────────────────────────────────────────
 
     public class WorldState : MonoBehaviour
@@ -58,9 +73,9 @@ namespace MMORPG.World
         [Serializable]
         private class WorldUpdatePayload
         {
-            public PlayerData[] players;
-            // O servidor envia "t" (não "timestamp") — JsonUtility faz mapeamento pelo nome exato
-            public long t;
+            public PlayerData[]   players;
+            public MonsterData[]  monsters;
+            public long t; // servidor envia "t" (não "timestamp")
         }
 
         // Formato de cada jogador no array (world:update do mmo-v1):
@@ -82,6 +97,19 @@ namespace MMORPG.World
             public string playerClass; // Servidor envia "playerClass" (alias de "class") para compatibilidade C#
         }
 
+        // Formato de cada monstro no array (world:update do mmo-v1):
+        // { "id":"m_001", "type":"wolf", "x":1200, "y":900, "hp":80, "maxHp":80 }
+        [Serializable]
+        private class MonsterData
+        {
+            public string id;
+            public string type;
+            public float  x;
+            public float  y;
+            public int    hp;
+            public int    maxHp;
+        }
+
         // ─── Singleton ────────────────────────────────────────────────────────────
         public static WorldState Instance { get; private set; }
 
@@ -91,7 +119,10 @@ namespace MMORPG.World
         /// Todos os jogadores ativos, indexados por socket ID.
         /// Inclui o jogador local? Depende do servidor — geralmente sim.
         /// </summary>
-        public Dictionary<string, RemotePlayer> Players { get; } = new();
+        public Dictionary<string, RemotePlayer>  Players  { get; } = new();
+
+        /// <summary>Todos os monstros ativos, indexados por ID.</summary>
+        public Dictionary<string, RemoteMonster> Monsters { get; } = new();
 
         /// <summary>Socket ID do jogador local (definido pelo GameManager após join).</summary>
         public string LocalPlayerId { get; set; }
@@ -207,6 +238,34 @@ namespace MMORPG.World
             }
 
             OnWorldUpdated?.Invoke(updatedIds);
+
+            // ── Processa monstros ─────────────────────────────────────────────────
+            if (payload.monsters != null)
+            {
+                var monsterIds = new HashSet<string>(payload.monsters.Length);
+
+                foreach (var m in payload.monsters)
+                {
+                    if (string.IsNullOrEmpty(m?.id)) continue;
+                    monsterIds.Add(m.id);
+                    Monsters[m.id] = new RemoteMonster
+                    {
+                        id    = m.id,
+                        type  = m.type ?? "unknown",
+                        x     = m.x / 50f,
+                        z     = m.y / 50f,
+                        hp    = m.hp,
+                        maxHp = m.maxHp > 0 ? m.maxHp : 1,
+                    };
+                }
+
+                // Remove monstros que sumiram do servidor
+                var deadMonsters = new List<string>();
+                foreach (string mid in Monsters.Keys)
+                    if (!monsterIds.Contains(mid)) deadMonsters.Add(mid);
+                foreach (string mid in deadMonsters)
+                    Monsters.Remove(mid);
+            }
         }
 
         /// <summary>
