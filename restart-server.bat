@@ -1,12 +1,12 @@
 @echo off
-title MMO v1 — Reiniciando servidor
+title MMO — Reiniciando servidor
 echo Matando processos node.exe existentes...
 taskkill /F /IM node.exe 2>nul
 echo Aguardando 2 segundos...
 timeout /t 2 /nobreak >nul
 
-cd /d "%~dp0mmo-v1"
-set NODE_EXE=%~dp0mmo-slice-v2\mmo-slice\node-v24.16.0-win-x64\node.exe
+cd /d "%~dp0server"
+set NODE_EXE=%~dp0_archive\mmo-slice\node-v24.16.0-win-x64\node.exe
 if not exist "%NODE_EXE%" set NODE_EXE=node
 
 echo Iniciando MMO v1...
