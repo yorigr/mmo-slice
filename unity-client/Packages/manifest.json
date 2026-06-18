@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "com.unity.ugui": "1.0.0",
+    "com.unity.render-pipelines.universal": "17.0.3",
+    "com.unity.textmeshpro": "3.0.9",
+    "com.endel.nativewebsocket": "https://github.com/endel/NativeWebSocket.git#upm"
+  }
+}
