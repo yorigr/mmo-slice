@@ -85,7 +85,7 @@ io.on('connection', (socket) => {
   });
 
   // Ping para medição de RTT — usado pelo Unity NetworkManager e pelo cliente browser
-  socket.on('ping', (ts) => socket.emit('pong', ts));
+  socket.on('ping_rtt', (ts) => socket.emit('pong_rtt', ts));
 
   socket.on('disconnect', () => {
     players.removePlayer(socket.id);
