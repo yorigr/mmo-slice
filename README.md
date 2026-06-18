@@ -1,63 +1,59 @@
-# ⚔️ MMO Vertical Slice v2 — Netcode + Casting
+# ⚔️ MMORPG — Projeto Unity 6 + Node.js
 
-Fundação testável do projeto. A v1 provou movimento e combate autoritativos;
-a v2 adiciona o sistema de **casting interrompível** (o "micro casting" que você queria).
+## Estrutura do Repositório
 
-## O que está provado (testado, não só escrito)
-
-- ✅ Servidor autoritativo + tick loop 20Hz
-- ✅ Validação de movimento (speedhack rejeitado)
-- ✅ 3 abilities: Slash (instantâneo), Heavy Blow (cast 0,4s), Frost Bolt (cast 0,9s, ranged)
-- ✅ Cast com tempo: só resolve quando o tempo passa
-- ✅ **Interrupção por dano**: tomar golpe durante o cast cancela (e custa a mana)
-- ✅ Cooldown e mana forçados no servidor
-- ✅ Alcance ranged validado
-- ✅ Client-side prediction no movimento
-
-## Rodar
-
-Precisa de Node.js 18+.
-
-```bash
-cd mmo-slice
-npm install
-node server.js
-# abra http://localhost:3000 em DUAS abas
+```
+MMORPG/
+├── server/           ← SERVIDOR ATIVO (main path) — Node.js, Socket.IO, porta 3000
+├── unity-client/     ← CLIENTE UNITY (main path) — Unity 6 URP 3D isométrico
+│   └── mmo-client/       Projeto Unity (abrir no Unity Hub)
+├── _archive/         ← REFERÊNCIA APENAS — protótipo antigo, não usar em produção
+│   └── mmo-slice/        Servidor single-file + cliente browser (fase de protótipo)
+├── docs/             ← Documentação do projeto
+├── iniciar-mmorpg.bat   Inicia o servidor (atalho rápido)
+├── restart-server.bat   Mata e reinicia o servidor
+└── push-github.bat      Envia alterações para GitHub
 ```
 
-## Controles
+> **Regra simples:** tudo que importa está em `server/` e `unity-client/`.  
+> `_archive/` existe apenas para consulta histórica.
 
-- Mover: W A S D (ou setas)
-- `1` Slash · `2` Heavy Blow · `3` Frost Bolt
-- Bolt mira automaticamente no inimigo mais próximo
-- Barra amarela = cast em andamento. Acerte o inimigo durante o cast dele para interromper.
+## Iniciar o servidor
 
-## Testes
+Execute `iniciar-mmorpg.bat` (usa o Node portátil em `_archive/mmo-slice/node-v24.16.0-win-x64/`).
 
-```bash
-node test.js           # lógica de movimento/combate v1 (13 checks)
-node test-network.js   # rede v1 (9 checks)
-node test-casting.js   # sistema de casting v2 (20 checks)
-node test-net-v2.js    # rede v2: casting + interrupção + mana (8 checks)
-```
-Total: **50 verificações automatizadas**, todas passando.
+Acesse `http://localhost:3000` para o painel web.
 
-## Decisão de design embutida
+O cliente Unity conecta automaticamente em `ws://localhost:3000`.
 
-Mana é consumida no **início** do cast. Se você for interrompido, perde a mana —
-esse é o risco que torna a interrupção significativa (estilo hardcore). Fácil de
-mudar se quiser que interrupção devolva a mana.
+## Arquitetura do servidor (`server/`)
 
-## Próximo passo de menor risco
+- `src/server.js` — entrada + Socket.IO
+- `src/managers/PlayerManager.js` — movimento e estado de jogadores
+- `src/managers/MonsterManager.js` — IA e spawn de monstros
+- `src/managers/CombatEngine.js` — combate autoritativo
+- `src/managers/WorldManager.js` — mapa 2400×1800, colisão
+- `src/config/constants.js` — tick rate, velocidades, HP
+- `src/config/skills.json` — definições de habilidades
 
-1. **Sentir o feel** com 2 abas: o jogo do gato-e-rato de interromper casts é
-   divertido? Responsivo? Esse é o teste que decide tudo.
-2. Adicionar **dano vindo de equipamento** (primeiro passo do skill-based).
-3. Só depois: persistência (banco), classes de verdade, zonas.
+## Cliente Unity (`unity-client/mmo-client/`)
 
-## Arquivos
+Unity 6 (6000.5.0f1), URP, câmera isométrica 3D.
 
-- `server.js` — servidor autoritativo v2 (lógica em funções puras testáveis)
-- `public/index.html` — cliente canvas
-- `test*.js` — suítes de teste
-- `server-v1-backup.js` — versão anterior (referência)
+Scripts em `Assets/Scripts/`:
+- `GameManager.cs` — orquestrador principal
+- `Network/NetworkManager.cs` — WebSocket + Socket.IO v4 sem dependências externas
+- `Network/SocketIOParser.cs` — parser Engine.IO v4
+- `Player/PlayerController.cs` — movimento com client-side prediction
+- `World/WorldState.cs` — estado dos jogadores e monstros
+- `World/MonsterController.cs` — representação visual dos monstros
+
+## Stack técnica
+
+| Camada | Tecnologia |
+|--------|-----------|
+| Servidor | Node.js + Socket.IO v4 |
+| Protocolo | Engine.IO v4 / WebSocket |
+| Cliente | Unity 6 URP (C#) |
+| Mapa | 2400×1800 unidades servidor |
+| Tick rate | 20Hz (50ms) |
