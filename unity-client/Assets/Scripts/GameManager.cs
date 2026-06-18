@@ -142,8 +142,8 @@ namespace MMORPG
         {
             Debug.Log("[GameManager] Conectado ao servidor. Enviando player:join...");
 
-            // Formato: {"name":"Yuri","class":"warrior"}
-            string json = $"{{\"name\":\"{playerName}\",\"class\":\"{playerClass}\"}}";
+            // Servidor lê "playerClass" (não "class" — palavra reservada no protocolo v1)
+            string json = $"{{\"name\":\"{playerName}\",\"playerClass\":\"{playerClass}\"}}";
             _net.Emit("player:join", json);
         }
 
