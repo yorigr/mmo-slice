@@ -304,69 +304,73 @@ namespace MMORPG.World
         }
 
         /// <summary>
-        /// Processa "player:left" — remove jogador do estado.
-        /// json formato: {"id":"abc"}
+        /// Processa "player:left" — jogador saiu do mundo.
+        /// Remove do dicionário e dispara OnPlayerLeft para que o GameManager destrua o objeto.
         /// </summary>
         public void HandlePlayerLeft(string json)
         {
+            if (string.IsNullOrEmpty(json)) return;
+
             try
             {
-                var data = JsonUtility.FromJson<IdPayload>(json);
-                if (data == null || string.IsNullOrEmpty(data.id)) return;
+                var envelope = JsonUtility.FromJson<PlayerLeftEnvelope>(json);
+                if (envelope == null || string.IsNullOrEmpty(envelope.id)) return;
 
-                Players.Remove(data.id);
-                OnPlayerLeft?.Invoke(data.id);
+                string leftId = envelope.id;
+                Players.Remove(leftId);
+                OnPlayerLeft?.Invoke(leftId);
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[WorldState] Erro ao processar player:left: {ex.Message}");
+                Debug.LogError($"[WorldState] Falha ao parsear player:left: {ex.Message}");
             }
         }
 
-        /// <summary>Limpa todo o estado (ex: ao desconectar).</summary>
+        /// <summary>
+        /// Retorna os dados do jogador local se ele estiver no dicionário.
+        /// </summary>
+        public bool TryGetLocalPlayer(out RemotePlayer data)
+        {
+            if (!string.IsNullOrEmpty(LocalPlayerId) && Players.TryGetValue(LocalPlayerId, out data))
+                return true;
+            data = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Limpa todo o estado do mundo (chamado ao desconectar/reconectar).
+        /// LocalPlayerId é resetado — será redefinido ao receber player:joined novamente.
+        /// </summary>
         public void Clear()
         {
             Players.Clear();
+            Monsters.Clear();
             LocalPlayerId = null;
             LastServerTimestamp = 0;
         }
 
-        // ─── Helpers ──────────────────────────────────────────────────────────────
+        // ─── Estruturas auxiliares ────────────────────────────────────────────────
 
-        /// <summary>Retorna dados do jogador local, se disponível.</summary>
-        public bool TryGetLocalPlayer(out RemotePlayer player)
-        {
-            if (!string.IsNullOrEmpty(LocalPlayerId) && Players.TryGetValue(LocalPlayerId, out player))
-                return true;
-
-            player = default;
-            return false;
-        }
-
-        // Estrutura auxiliar para parsear payloads com apenas "id"
-        [Serializable]
-        private class IdPayload { public string id; }
-
-        // Envelope do evento "player:joined" do mmo-v1:
-        // { "id":"...", "world":{...}, "abilities":{...}, "state":{id,name,x,y,hp,maxHp,...} }
+        // Envelope do "player:joined" do mmo-v1: {id, world, abilities, state:{x,y,name,...}}
         [Serializable]
         private class PlayerJoinedEnvelope
         {
-            public string id;
-            public PlayerJoinedState state;
+            public string             id;
+            public PlayerJoinedState  state;
         }
 
-        // Dados do jogador dentro do envelope "player:joined"
         [Serializable]
         private class PlayerJoinedState
         {
-            public string id;
-            public string name;
             public float  x;
             public float  y;
+            public string name;
             public int    hp;
             public int    maxHp;
-            public string playerClass; // servidor envia "playerClass" como alias de "class"
+            public string playerClass;
         }
+
+        [Serializable]
+        private class PlayerLeftEnvelope { public string id; }
     }
 }
