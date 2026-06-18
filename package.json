@@ -1,0 +1,13 @@
+{
+  "name": "mmo-slice",
+  "version": "0.2.0",
+  "description": "Vertical slice: servidor autoritativo + casting interrompível",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js && node test-casting.js",
+    "test:net": "node test-network.js && node test-net-v2.js"
+  },
+  "dependencies": { "express": "^4.21.2", "socket.io": "^4.8.1" },
+  "devDependencies": { "socket.io-client": "^4.8.1" }
+}
