@@ -41,7 +41,8 @@ namespace MMORPG.Network
     public enum SocketIOMessageType
     {
         Unknown,
-        Connect,        // "40" — sessão aberta
+        EngineOpen,     // "0{...}" — Engine.IO handshake (cliente deve responder com "40")
+        Connect,        // "40" — Socket.IO namespace connect confirmado pelo servidor
         Ping,           // "2"  — keepalive do servidor
         Disconnect,     // "41" — servidor pediu desconexão
         Event,          // "42[...]" — mensagem real do jogo
@@ -70,17 +71,21 @@ namespace MMORPG.Network
             if (string.IsNullOrEmpty(raw))
                 return new SocketIOMessage(SocketIOMessageType.Unknown);
 
-            // Pacotes de uma letra: ping "2", open "0", close "1"
+            // Pacotes de uma letra: ping "2", close "1"
             if (raw.Length == 1)
             {
                 return raw[0] switch
                 {
                     EIO_PING  => new SocketIOMessage(SocketIOMessageType.Ping),
-                    EIO_OPEN  => new SocketIOMessage(SocketIOMessageType.Connect),
                     EIO_CLOSE => new SocketIOMessage(SocketIOMessageType.Disconnect),
                     _         => new SocketIOMessage(SocketIOMessageType.Unknown)
                 };
             }
+
+            // Engine.IO open: "0{...}" — handshake inicial do servidor
+            // Socket.IO v4: após receber isto, o cliente DEVE enviar "40" para conectar ao namespace
+            if (raw[0] == EIO_OPEN)
+                return new SocketIOMessage(SocketIOMessageType.EngineOpen);
 
             // Pacotes com prefixo Engine.IO "4" (mensagens Socket.IO reais)
             if (raw[0] != EIO_MESSAGE)
@@ -167,5 +172,17 @@ namespace MMORPG.Network
         /// String de pong para responder ao ping do servidor. Deve ser enviada como-está.
         /// </summary>
         public static string PongMessage => "3";
+
+        /// <summary>
+        /// String de ping para keepalive client-initiated. Deve ser enviada como-está.
+        /// </summary>
+        public static string PingMessage => "2";
+
+        /// <summary>
+        /// Pacote Socket.IO v4 para solicitar conexão ao namespace padrão "/".
+        /// Em Socket.IO v4 (EIO=4), o CLIENTE deve enviar este pacote após receber
+        /// o handshake Engine.IO ("0{...}"). O servidor responde com outro "40" confirmando.
+        /// </summary>
+        public static string NamespaceConnectMessage => "40";
     }
 }
