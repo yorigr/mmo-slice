@@ -1,22 +1,24 @@
 // NetworkManager.cs
 // Gerencia a conexão WebSocket com o servidor Node.js + Socket.IO.
 //
+// SEM DEPENDÊNCIAS EXTERNAS — usa System.Net.WebSockets (built-in Unity 2021+).
+//
 // Arquitetura:
 //   - Singleton (DontDestroyOnLoad) — uma única instância vive durante toda a sessão
-//   - NativeWebSocket cuida do WebSocket puro; SocketIOParser trata o envelope Socket.IO v4
+//   - Receive loop em background Task; mensagens despachadas para o main thread via ConcurrentQueue
+//   - SocketIOParser trata o envelope Socket.IO v4 (40/2/3/42["event",{...}])
 //   - Reconexão automática com backoff exponencial (3s → 6s → 12s → 30s max)
 //   - Ping/pong a cada 5s para medir RTT e manter a conexão viva em proxies
-//   - Despacha eventos via System.Action — simples, sem overhead de UnityEvent
-//
-// Como usar em outros scripts:
-//   NetworkManager.Instance.OnEvent["world:update"] += OnWorldUpdate;
-//   NetworkManager.Instance.Emit("player:move", JsonUtility.ToJson(moveData));
 
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Net.WebSockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
-using NativeWebSocket;
 
 namespace MMORPG.Network
 {
@@ -31,11 +33,11 @@ namespace MMORPG.Network
         [SerializeField] private string serverUrl = "ws://localhost:3000/socket.io/?EIO=4&transport=websocket";
 
         [Header("Reconexão")]
-        [SerializeField] private float reconnectBaseDelay = 3f;   // Primeiro retry: 3s
-        [SerializeField] private float reconnectMaxDelay  = 30f;  // Teto do backoff
+        [SerializeField] private float reconnectBaseDelay = 3f;
+        [SerializeField] private float reconnectMaxDelay  = 30f;
 
         [Header("Keepalive")]
-        [SerializeField] private float pingIntervalSeconds = 5f;  // Envia ping a cada 5s
+        [SerializeField] private float pingIntervalSeconds = 5f;
 
         // ─── Estado público ───────────────────────────────────────────────────────
         public bool IsConnected => _ws != null && _ws.State == WebSocketState.Open;
@@ -44,142 +46,204 @@ namespace MMORPG.Network
         public float LatencyMs { get; private set; }
 
         // ─── Eventos ──────────────────────────────────────────────────────────────
-        /// <summary>
-        /// Chamado quando a conexão é estabelecida E o Socket.IO retorna "40" (connect).
-        /// Só aqui é seguro fazer Emit — o socket já está pronto.
-        /// </summary>
+        /// <summary>Chamado quando Socket.IO confirma sessão ("40"). Seguro emitir após este evento.</summary>
         public event Action OnConnected;
 
         /// <summary>Chamado quando a conexão é perdida (erro ou fechamento).</summary>
         public event Action OnDisconnected;
 
         /// <summary>
-        /// Dicionário de callbacks por nome de evento Socket.IO.
+        /// Callbacks por nome de evento Socket.IO.
         /// Uso: NetworkManager.Instance.OnEvent["world:update"] += handler;
         /// </summary>
         public Dictionary<string, Action<string>> OnEvent { get; } = new();
 
         // ─── Internos ─────────────────────────────────────────────────────────────
-        private WebSocket _ws;
+        private ClientWebSocket          _ws;
+        private CancellationTokenSource  _cts;
         private Coroutine _reconnectCoroutine;
         private Coroutine _pingCoroutine;
-        private int       _reconnectAttempt = 0;
-        private bool      _intentionalDisconnect = false; // Evita reconectar após Disconnect() manual
+        private int       _reconnectAttempt;
+        private bool      _intentionalDisconnect;
         private float     _pingSentTime;
+
+        // Filas thread-safe para despachar para o main thread
+        private readonly ConcurrentQueue<string> _messageQueue   = new();
+        private readonly ConcurrentQueue<Action> _mainThreadQueue = new();
 
         // ─── Unity Lifecycle ──────────────────────────────────────────────────────
         private void Awake()
         {
-            // Singleton clássico com DontDestroyOnLoad
-            if (Instance != null && Instance != this)
-            {
-                Destroy(gameObject);
-                return;
-            }
+            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
             Instance = this;
             DontDestroyOnLoad(gameObject);
         }
 
         private void Update()
         {
-            // NativeWebSocket requer dispatch manual no thread principal no WebGL.
-            // No standalone também é necessário para processar callbacks da fila.
-#if !UNITY_WEBGL || UNITY_EDITOR
-            _ws?.DispatchMessageQueue();
-#endif
+            // Executa ações de estado (open/close/error) no main thread
+            while (_mainThreadQueue.TryDequeue(out var action))
+                action?.Invoke();
+
+            // Processa mensagens Socket.IO recebidas
+            while (_messageQueue.TryDequeue(out var raw))
+                HandleMessage(raw);
         }
 
         private void OnDestroy()
         {
-            // Garante que a conexão seja fechada limpa ao destruir o objeto
-            _ = _ws?.Close();
+            _intentionalDisconnect = true;
+            _cts?.Cancel();
+            _ws?.Abort();
         }
 
         // ─── API Pública ──────────────────────────────────────────────────────────
 
         /// <summary>
         /// Inicia a conexão com o servidor.
-        /// Pode ser chamado a qualquer momento — se já conectado, não faz nada.
+        /// Se já conectado, não faz nada.
         /// </summary>
-        public async void Connect()
+        public void Connect()
         {
             if (IsConnected) return;
-
             _intentionalDisconnect = false;
             _reconnectAttempt = 0;
-            await OpenWebSocket();
+            _ = OpenWebSocket();
         }
 
         /// <summary>
         /// Fecha a conexão de forma intencional (sem reconexão automática).
-        /// Use no logout ou ao encerrar o jogo.
         /// </summary>
         public async void Disconnect()
         {
             _intentionalDisconnect = true;
             StopReconnect();
             StopPing();
+            _cts?.Cancel();
 
-            if (_ws != null)
-                await _ws.Close();
+            if (_ws != null && _ws.State == WebSocketState.Open)
+            {
+                try { await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "disconnect", CancellationToken.None); }
+                catch { /* ignora erros no close */ }
+            }
         }
 
         /// <summary>
         /// Envia um evento Socket.IO para o servidor.
         /// jsonPayload: objeto serializado com JsonUtility.ToJson() ou string JSON manual.
         /// </summary>
-        public async void Emit(string eventName, string jsonPayload = null)
+        public void Emit(string eventName, string jsonPayload = null)
         {
             if (!IsConnected)
             {
                 Debug.LogWarning($"[NetworkManager] Tentou emitir '{eventName}' sem conexão.");
                 return;
             }
-
             string message = SocketIOParser.BuildEmit(eventName, jsonPayload);
-            await _ws.SendText(message);
+            SendRaw(message);
         }
 
         // ─── Conexão ──────────────────────────────────────────────────────────────
-        private async System.Threading.Tasks.Task OpenWebSocket()
+        private async Task OpenWebSocket()
         {
-            // Fecha a conexão anterior se existir
+            // Cancela e descarta conexão anterior
+            _cts?.Cancel();
             if (_ws != null)
             {
-                _ws.OnOpen    -= HandleOpen;
-                _ws.OnMessage -= HandleMessage;
-                _ws.OnError   -= HandleError;
-                _ws.OnClose   -= HandleClose;
-                await _ws.Close();
+                try { _ws.Abort(); } catch { /* ok */ }
+                _ws.Dispose();
             }
 
-            _ws = new WebSocket(serverUrl);
-            _ws.OnOpen    += HandleOpen;
-            _ws.OnMessage += HandleMessage;
-            _ws.OnError   += HandleError;
-            _ws.OnClose   += HandleClose;
+            _cts = new CancellationTokenSource();
+            _ws  = new ClientWebSocket();
 
             Debug.Log($"[NetworkManager] Conectando em {serverUrl}...");
-            await _ws.Connect();
+
+            try
+            {
+                await _ws.ConnectAsync(new Uri(serverUrl), _cts.Token);
+                _mainThreadQueue.Enqueue(HandleOpen);
+                _ = ReceiveLoop();
+            }
+            catch (OperationCanceledException) { /* shutdown intencional */ }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[NetworkManager] Falha ao conectar: {ex.Message}");
+                _mainThreadQueue.Enqueue(HandleConnectFailed);
+            }
         }
 
-        // ─── Handlers WebSocket ───────────────────────────────────────────────────
+        private async Task ReceiveLoop()
+        {
+            var buffer = new byte[8192];
+            var sb     = new StringBuilder();
+
+            try
+            {
+                while (_ws.State == WebSocketState.Open && !_cts.IsCancellationRequested)
+                {
+                    sb.Clear();
+                    WebSocketReceiveResult result;
+
+                    do
+                    {
+                        result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
+
+                        if (result.MessageType == WebSocketMessageType.Close)
+                        {
+                            _mainThreadQueue.Enqueue(HandleCloseFromServer);
+                            return;
+                        }
+
+                        sb.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                    }
+                    while (!result.EndOfMessage);
+
+                    string raw = sb.ToString();
+                    if (!string.IsNullOrEmpty(raw))
+                        _messageQueue.Enqueue(raw);
+                }
+            }
+            catch (OperationCanceledException) { /* shutdown intencional */ }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[NetworkManager] ReceiveLoop erro: {ex.Message}");
+                _mainThreadQueue.Enqueue(HandleCloseFromServer);
+            }
+        }
+
+        // ─── Handlers (main thread) ───────────────────────────────────────────────
         private void HandleOpen()
         {
-            // HandleOpen dispara quando o WebSocket TCP abre.
-            // Ainda NÃO é seguro emitir — esperamos o "40" do Socket.IO (HandleMessage).
+            // TCP aberto — aguarda o "40" do Socket.IO antes de notificar OnConnected
             Debug.Log("[NetworkManager] WebSocket aberto. Aguardando handshake Socket.IO...");
         }
 
-        private void HandleMessage(byte[] bytes)
+        private void HandleConnectFailed()
         {
-            string raw = System.Text.Encoding.UTF8.GetString(bytes);
+            StopPing();
+            OnDisconnected?.Invoke();
+            if (!_intentionalDisconnect)
+                StartReconnect();
+        }
+
+        private void HandleCloseFromServer()
+        {
+            Debug.Log("[NetworkManager] Conexão fechada pelo servidor.");
+            StopPing();
+            OnDisconnected?.Invoke();
+            if (!_intentionalDisconnect)
+                StartReconnect();
+        }
+
+        private void HandleMessage(string raw)
+        {
             SocketIOMessage msg = SocketIOParser.Parse(raw);
 
             switch (msg.Type)
             {
                 case SocketIOMessageType.Connect:
-                    // "40" — Socket.IO confirmou a sessão. Agora podemos emitir.
+                    // "40" — Socket.IO confirmou a sessão. Seguro emitir agora.
                     _reconnectAttempt = 0;
                     StartPing();
                     Debug.Log("[NetworkManager] Socket.IO conectado.");
@@ -188,7 +252,7 @@ namespace MMORPG.Network
 
                 case SocketIOMessageType.Ping:
                     // "2" — servidor testando se estamos vivos. Responda imediatamente.
-                    _ = _ws.SendText(SocketIOParser.PongMessage);
+                    SendRaw(SocketIOParser.PongMessage);
                     break;
 
                 case SocketIOMessageType.Disconnect:
@@ -201,28 +265,29 @@ namespace MMORPG.Network
             }
         }
 
-        private void HandleError(string errorMsg)
+        private async void SendRaw(string message)
         {
-            Debug.LogError($"[NetworkManager] WebSocket erro: {errorMsg}");
+            if (!IsConnected) return;
+            try
+            {
+                var bytes = Encoding.UTF8.GetBytes(message);
+                await _ws.SendAsync(
+                    new ArraySegment<byte>(bytes),
+                    WebSocketMessageType.Text,
+                    endOfMessage: true,
+                    cancellationToken: _cts?.Token ?? CancellationToken.None
+                );
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[NetworkManager] SendRaw erro: {ex.Message}");
+            }
         }
 
-        private void HandleClose(WebSocketCloseCode closeCode)
-        {
-            Debug.Log($"[NetworkManager] Conexão fechada: {closeCode}");
-            StopPing();
-            OnDisconnected?.Invoke();
-
-            // Reconecta automaticamente, a menos que o disconnect foi intencional
-            if (!_intentionalDisconnect)
-                StartReconnect();
-        }
-
-        // ─── Despacho de eventos ──────────────────────────────────────────────────
         private void DispatchEvent(string eventName, string jsonData)
         {
             if (OnEvent.TryGetValue(eventName, out Action<string> handler))
                 handler?.Invoke(jsonData);
-            // Eventos sem listener são silenciosamente ignorados (normal durante dev)
         }
 
         // ─── Reconexão com backoff exponencial ───────────────────────────────────
@@ -234,18 +299,13 @@ namespace MMORPG.Network
 
         private void StopReconnect()
         {
-            if (_reconnectCoroutine != null)
-            {
-                StopCoroutine(_reconnectCoroutine);
-                _reconnectCoroutine = null;
-            }
+            if (_reconnectCoroutine != null) { StopCoroutine(_reconnectCoroutine); _reconnectCoroutine = null; }
         }
 
         private IEnumerator ReconnectCoroutine()
         {
             while (!_intentionalDisconnect)
             {
-                // Backoff: 3s, 6s, 12s, 24s, 30s, 30s, ...
                 float delay = Mathf.Min(reconnectBaseDelay * Mathf.Pow(2, _reconnectAttempt), reconnectMaxDelay);
                 _reconnectAttempt++;
 
@@ -253,9 +313,8 @@ namespace MMORPG.Network
                 yield return new WaitForSeconds(delay);
 
                 if (!_intentionalDisconnect)
-                    await OpenWebSocket();
+                    _ = OpenWebSocket();
 
-                // Se conectou, para o loop. HandleMessage("40") vai limpar _reconnectAttempt.
                 if (IsConnected) yield break;
             }
         }
@@ -269,44 +328,27 @@ namespace MMORPG.Network
 
         private void StopPing()
         {
-            if (_pingCoroutine != null)
-            {
-                StopCoroutine(_pingCoroutine);
-                _pingCoroutine = null;
-            }
+            if (_pingCoroutine != null) { StopCoroutine(_pingCoroutine); _pingCoroutine = null; }
         }
 
         private IEnumerator PingCoroutine()
         {
-            // Registra handler de pong para medir RTT
-            // O servidor Socket.IO responde ao nosso ping com "3"
-            // Nota: o servidor Socket.IO normalmente envia pings e espera pongs do cliente.
-            // Aqui usamos o evento "pong" customizado para medir latência se o servidor suportar.
-            // O keepalive real é feito pelo HandleMessage respondendo "2" → "3".
-
             while (IsConnected)
             {
                 yield return new WaitForSeconds(pingIntervalSeconds);
-
                 if (!IsConnected) yield break;
-
-                // Registra tempo de envio para calcular RTT quando receber resposta
                 _pingSentTime = Time.realtimeSinceStartup;
-
-                // Emite evento customizado de ping ao servidor (se o servidor suportar)
-                // Isso é opcional — o keepalive Socket.IO "2"/"3" já mantém a conexão
                 Emit("ping");
             }
         }
 
         /// <summary>
-        /// Chamado pelo GameManager quando o servidor responder ao nosso ping customizado.
+        /// Chamado pelo GameManager quando o servidor responde ao ping customizado.
         /// Atualiza a latência exibida no HUD.
         /// </summary>
         public void RegisterPong()
         {
             float rtt = (Time.realtimeSinceStartup - _pingSentTime) * 1000f;
-            // Suaviza a leitura para evitar variações bruscas no display
             LatencyMs = Mathf.Lerp(LatencyMs, rtt, 0.3f);
         }
     }
