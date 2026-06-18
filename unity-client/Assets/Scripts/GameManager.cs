@@ -91,7 +91,7 @@ namespace MMORPG
             _net.OnEvent["player:joined"] = HandlePlayerJoined;
             _net.OnEvent["player:left"]   = HandlePlayerLeft;
             _net.OnEvent["world:update"]  = HandleWorldUpdate;
-            _net.OnEvent["pong"]          = HandlePong;
+            _net.OnEvent["pong_rtt"]      = HandlePong;
             _net.OnEvent["player:died"]   = HandlePlayerDied;
 
             // Registra callbacks do WorldState para spawning de remotos
@@ -164,19 +164,28 @@ namespace MMORPG
         // ─── Handlers de eventos do servidor ─────────────────────────────────────
         private void HandlePlayerJoined(string json)
         {
-            // Payload: {"id":"abc123","name":"Yuri","x":1200,"y":900,"hp":100,"maxHp":100,"class":"warrior"}
-            _world?.HandlePlayerJoined(json);
-
-            // Tenta extrair o ID para verificar se é o jogador local
+            // Extrai o ID ANTES de notificar o WorldState para evitar race condition:
+            // Se LocalPlayerId ainda não está definido (= somos nós), precisamos definir ANTES
+            // de chamar HandlePlayerJoined, caso contrário OnPlayerJoined dispara SpawnRemotePlayer
+            // e spawna nosso próprio personagem como remoto.
             var idPayload = JsonUtility.FromJson<IdExtract>(json);
             if (idPayload == null || string.IsNullOrEmpty(idPayload.id)) return;
 
-            // Se ainda não temos um ID local (primeira vez que recebemos player:joined para nós)
-            // O servidor envia player:joined para o próprio jogador com SEU id
-            if (string.IsNullOrEmpty(_world?.LocalPlayerId))
+            bool isLocalPlayer = string.IsNullOrEmpty(_world?.LocalPlayerId);
+
+            if (isLocalPlayer && _world != null)
             {
-                // Heurística: se não há jogador local spawned, este é o nosso join
-                // Uma implementação mais robusta usaria um campo "isLocal" ou o socket ID
+                // Define LocalPlayerId ANTES de notificar o WorldState, assim SpawnRemotePlayer
+                // vai pular corretamente o nosso próprio ID quando OnPlayerJoined disparar.
+                _world.LocalPlayerId = idPayload.id;
+            }
+
+            // Notifica o WorldState (dispara OnPlayerJoined → SpawnRemotePlayer para outros)
+            _world?.HandlePlayerJoined(json);
+
+            // Spawna o jogador local se for o nosso join
+            if (isLocalPlayer)
+            {
                 AssignLocalPlayer(idPayload.id, json);
             }
         }
@@ -241,6 +250,14 @@ namespace MMORPG
 
             // Usa o nome do servidor se disponível; fallback para o nome configurado no Inspector
             string spawnName = !string.IsNullOrEmpty(stateData?.name) ? stateData.name : playerName;
+
+            // Destrói instância anterior (pode existir após reconexão)
+            if (_localPlayerGO != null)
+            {
+                Destroy(_localPlayerGO);
+                _localPlayerGO   = null;
+                _localPlayerCtrl = null;
+            }
 
             // Spawna o jogador local
             _localPlayerGO   = Instantiate(playerPrefab, startPos, Quaternion.identity);
