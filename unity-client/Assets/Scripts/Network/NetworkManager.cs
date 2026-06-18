@@ -242,11 +242,18 @@ namespace MMORPG.Network
 
             switch (msg.Type)
             {
+                case SocketIOMessageType.EngineOpen:
+                    // "0{...}" — Engine.IO handshake recebido.
+                    // Socket.IO v4 (EIO=4): o CLIENTE deve enviar "40" para conectar ao namespace.
+                    Debug.Log("[NetworkManager] Engine.IO handshake recebido. Enviando namespace connect (40)...");
+                    SendRaw(SocketIOParser.NamespaceConnectMessage);
+                    break;
+
                 case SocketIOMessageType.Connect:
-                    // "40" — Socket.IO confirmou a sessão. Seguro emitir agora.
+                    // "40" — servidor confirmou conexão ao namespace /. Seguro emitir agora.
                     _reconnectAttempt = 0;
                     StartPing();
-                    Debug.Log("[NetworkManager] Socket.IO conectado.");
+                    Debug.Log("[NetworkManager] Socket.IO conectado ao namespace /.");
                     OnConnected?.Invoke();
                     break;
 
@@ -337,19 +344,32 @@ namespace MMORPG.Network
             {
                 yield return new WaitForSeconds(pingIntervalSeconds);
                 if (!IsConnected) yield break;
+
                 _pingSentTime = Time.realtimeSinceStartup;
-                Emit("ping");
+                // Usa evento customizado para medição de RTT.
+                // "ping" é reservado pelo Socket.IO internamente; usamos "ping_rtt" para evitar conflito.
+                // O servidor responde com "pong_rtt".
+                Emit("ping_rtt");
+
+                // Aguarda pong (máx 5s)
+                float timeout = Time.realtimeSinceStartup + 5f;
+                yield return new WaitUntil(() =>
+                    !IsConnected || Time.realtimeSinceStartup >= timeout);
             }
         }
 
         /// <summary>
-        /// Chamado pelo GameManager quando o servidor responde ao ping customizado.
-        /// Atualiza a latência exibida no HUD.
+        /// Chamado pelo GameManager ao receber um pong do servidor.
+        /// Calcula e atualiza a latência medida (RTT / 2).
         /// </summary>
         public void RegisterPong()
         {
-            float rtt = (Time.realtimeSinceStartup - _pingSentTime) * 1000f;
-            LatencyMs = Mathf.Lerp(LatencyMs, rtt, 0.3f);
+            if (_pingSentTime > 0f)
+            {
+                LatencyMs = (Time.realtimeSinceStartup - _pingSentTime) * 1000f;
+                _pingSentTime = 0f;
+                Debug.Log($"[NetworkManager] RTT: {LatencyMs:F0}ms");
+            }
         }
     }
 }
