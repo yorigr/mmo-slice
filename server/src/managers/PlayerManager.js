@@ -1,11 +1,17 @@
-// PlayerManager — criação, movimento, spawn/respawn de players
+// PlayerManager -- criacao, movimento, spawn/respawn de players
 const { v4: uuidv4 } = require('uuid');
 const {
   MAX_HP, MAX_MANA, MAX_STAMINA, MAX_SPEED, MANA_REGEN_PER_SEC,
   STAMINA_REGEN_PER_SEC, RESPAWN_MS, MAP_W, MAP_H, CLASS_MODIFIERS,
+  MAX_LEVEL,
 } = require('../config/constants');
 
-const PLAYER_RADIUS = 22; // raio de colisão player-player
+// XP necessario para passar do level atual para o proximo. Formula: 100 * level^1.5
+function xpNeededForLevel(level) {
+  return Math.floor(100 * Math.pow(level, 1.5));
+}
+
+const PLAYER_RADIUS = 22;
 
 class PlayerManager {
   constructor(world) {
@@ -13,16 +19,15 @@ class PlayerManager {
   }
 
   createPlayer(socketId, { name, playerClass = 'warrior' }) {
-    const mod = CLASS_MODIFIERS[playerClass] || CLASS_MODIFIERS.warrior;
-    const maxHp   = Math.round(MAX_HP   * mod.hp);
+    const mod    = CLASS_MODIFIERS[playerClass] || CLASS_MODIFIERS.warrior;
+    const maxHp  = Math.round(MAX_HP   * mod.hp);
     const maxMana = Math.round(MAX_MANA * mod.mana);
-    const speed   = Math.round(MAX_SPEED * mod.speed);
+    const speed  = Math.round(MAX_SPEED * mod.speed);
 
     const state = {
       id: socketId,
       name: name || 'Player',
       class: playerClass,
-      // Spawn na zona central (200px de raio ao redor do centro do mapa).
       x: MAP_W / 2 + (Math.random() - 0.5) * 400,
       y: MAP_H / 2 + (Math.random() - 0.5) * 400,
       hp: maxHp, maxHp,
@@ -36,9 +41,12 @@ class PlayerManager {
       rejectedMoves: 0,
       level: 1,
       xp: 0,
+      xpMax: xpNeededForLevel(1),
       gold: 0,
       inventory: [],
       guildId: null,
+      damageMult: 1,
+      shield: 0,
     };
 
     this.world.addPlayer(state);
@@ -70,7 +78,7 @@ class PlayerManager {
     this._resolveCollisions(p);
   }
 
-  // Empurra jogadores que se sobrepõem (colisão física simples)
+  // Empurra jogadores sobrepostos (colisao simples)
   _resolveCollisions(mover) {
     const minDist = PLAYER_RADIUS * 2;
     for (const other of this.world.players.values()) {
@@ -94,17 +102,60 @@ class PlayerManager {
   scheduleRespawn(player) {
     setTimeout(() => {
       if (!this.world.getPlayer(player.id)) return;
-      const mod = CLASS_MODIFIERS[player.class] || CLASS_MODIFIERS.warrior;
-      // Respawn também na zona central
       Object.assign(player, {
-        hp: Math.round(MAX_HP * mod.hp),
-        mana: Math.round(MAX_MANA * mod.mana),
-        dead: false,
+        hp:      player.maxHp,
+        mana:    player.maxMana,
+        shield:  0,
+        dead:    false,
         casting: null,
         x: MAP_W / 2 + (Math.random() - 0.5) * 400,
         y: MAP_H / 2 + (Math.random() - 0.5) * 400,
       });
     }, RESPAWN_MS);
+  }
+
+  // Verifica level up apos ganho de XP. Emite player:levelup ao cliente.
+  checkLevelUp(player) {
+    let leveled = false;
+
+    while (player.level < MAX_LEVEL) {
+      const needed = xpNeededForLevel(player.level);
+      if (player.xp < needed) break;
+
+      player.xp -= needed;
+      player.level++;
+      leveled = true;
+
+      const mod        = CLASS_MODIFIERS[player.class] || CLASS_MODIFIERS.warrior;
+      const lvl        = player.level;
+      const hpScale    = 1 + (lvl - 1) * 0.08;
+      const manaScale  = 1 + (lvl - 1) * 0.08;
+      const speedScale = 1 + (lvl - 1) * 0.02;
+
+      player.maxHp      = Math.round(MAX_HP    * mod.hp    * hpScale);
+      player.maxMana    = Math.round(MAX_MANA  * mod.mana  * manaScale);
+      player.speed      = Math.round(MAX_SPEED * mod.speed * speedScale);
+      player.damageMult = 1 + (lvl - 1) * 0.05;
+
+      // Cura total no level up
+      player.hp    = player.maxHp;
+      player.mana  = player.maxMana;
+      player.xpMax = xpNeededForLevel(player.level);
+
+      this.world.io.to(player.id).emit('player:levelup', {
+        level:   player.level,
+        maxHp:   player.maxHp,
+        maxMana: player.maxMana,
+        speed:   player.speed,
+        xp:      player.xp,
+        xpMax:   player.xpMax,
+      });
+
+      console.log('  [level up] ' + player.name + ' -> Lv' + player.level
+        + ' (HP:' + player.maxHp + ' Mana:' + player.maxMana + ')');
+    }
+
+    return leveled;
   }
 
   // Chamado a cada tick pelo WorldManager
