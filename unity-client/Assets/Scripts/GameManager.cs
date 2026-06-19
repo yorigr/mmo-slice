@@ -50,6 +50,13 @@ namespace MMORPG
         private NetworkManager _net;
         private WorldState     _world;
 
+        /// <summary>
+        /// Token de reconexão emitido pelo servidor em player:joined.
+        /// Armazenado em memória (e em PlayerPrefs) para ser reenviado no próximo
+        /// player:join — permite retomar posição/XP/gold após desconexões curtas.
+        /// </summary>
+        private string _sessionToken;
+
         // Instância do GameObject do jogador local
         private GameObject _localPlayerGO;
         private PlayerController _localPlayerCtrl;
@@ -142,8 +149,17 @@ namespace MMORPG
         {
             Debug.Log("[GameManager] Conectado ao servidor. Enviando player:join...");
 
-            // Servidor lê "playerClass" (não "class" — palavra reservada no protocolo v1)
-            string json = $"{{\"name\":\"{playerName}\",\"playerClass\":\"{playerClass}\"}}";
+            // Carrega token salvo (PlayerPrefs persiste entre sessões do Unity)
+            if (string.IsNullOrEmpty(_sessionToken))
+                _sessionToken = PlayerPrefs.GetString("mmo_session_token", "");
+
+            // Inclui token se disponível — servidor restaura estado em até 30s
+            string tokenPart = string.IsNullOrEmpty(_sessionToken)
+                ? ""
+                : $",\"sessionToken\":\"{_sessionToken}\"";
+
+            // "playerClass" (não "class" — palavra reservada no protocolo v1 / C#)
+            string json = $"{{\"name\":\"{playerName}\",\"playerClass\":\"{playerClass}\"{tokenPart}}}";
             _net.Emit("player:join", json);
         }
 
@@ -238,10 +254,17 @@ namespace MMORPG
             }
 
             // Extrai posição inicial do payload de join.
-            // O servidor envia {id, world, abilities, state:{x,y,...}} — os dados de posição
-            // estão dentro de "state", não no nível raiz.
+            // O servidor envia {id, sessionToken, world, abilities, state:{x,y,...}}.
             var data = JsonUtility.FromJson<PlayerJoinData>(joinJson);
             var stateData = data?.state;
+
+            // Salva token de reconexão (v2) — usado no próximo player:join após desconexão
+            if (!string.IsNullOrEmpty(data?.sessionToken))
+            {
+                _sessionToken = data.sessionToken;
+                PlayerPrefs.SetString("mmo_session_token", _sessionToken);
+                PlayerPrefs.Save();
+            }
 
             // ServerToUnity usa GroundSampler internamente — Y = altura do terreno
             Vector3 startPos = stateData != null
@@ -350,6 +373,7 @@ namespace MMORPG
         private class PlayerJoinData
         {
             public string id;
+            public string sessionToken; // v2: token de reconexão emitido pelo servidor
             public PlayerJoinState state;
         }
 
