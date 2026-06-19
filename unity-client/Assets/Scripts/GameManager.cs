@@ -22,6 +22,7 @@ using MMORPG.Player;
 using MMORPG.World;
 using MMORPG.UI;
 // GroundSampler está em MMORPG.World — já importado acima
+// StickManBuilder e ItemWorldController estão em MMORPG
 
 namespace MMORPG
 {
@@ -43,8 +44,10 @@ namespace MMORPG
         [SerializeField] private string playerClass = "warrior";
 
         [Header("Referências de cena")]
-        [SerializeField] private CameraController cameraController;
-        [SerializeField] private HUD hud;
+        [SerializeField] private CameraController      cameraController;
+        [SerializeField] private HUD                   hud;
+        [SerializeField] private SkillBar              skillBar;          // Opcional: auto-cria se nulo
+        [SerializeField] private ItemWorldController   itemController;    // Opcional: auto-cria se nulo
 
         // ─── Estado interno ───────────────────────────────────────────────────────
         private NetworkManager _net;
@@ -88,14 +91,19 @@ namespace MMORPG
             _net.OnDisconnected += HandleDisconnected;
 
             // Registra eventos do servidor
-            _net.OnEvent["player:joined"]  = HandlePlayerJoined;
-            _net.OnEvent["player:left"]    = HandlePlayerLeft;
-            _net.OnEvent["world:update"]   = HandleWorldUpdate;
-            _net.OnEvent["pong_rtt"]       = HandlePong;       // corrigido: era "pong"
-            _net.OnEvent["player:died"]    = HandlePlayerDied;
-            _net.OnEvent["player:xp"]      = HandlePlayerXp;
-            _net.OnEvent["player:levelup"] = HandlePlayerLevelUp;
-            _net.OnEvent["player:revived"] = HandlePlayerRevived;
+            _net.OnEvent["player:joined"]    = HandlePlayerJoined;
+            _net.OnEvent["player:left"]      = HandlePlayerLeft;
+            _net.OnEvent["world:update"]     = HandleWorldUpdate;
+            _net.OnEvent["pong_rtt"]         = HandlePong;
+            _net.OnEvent["player:died"]      = HandlePlayerDied;
+            _net.OnEvent["player:xp"]        = HandlePlayerXp;
+            _net.OnEvent["player:levelup"]   = HandlePlayerLevelUp;
+            _net.OnEvent["player:revived"]   = HandlePlayerRevived;
+            _net.OnEvent["skill:result"]     = HandleSkillResult;
+            _net.OnEvent["item:picked"]      = HandleItemPicked;
+            // Servidor envia combate como arrays por tick (evita N eventos por frame)
+            _net.OnEvent["combat:hits"]      = HandleCombatHits;
+            _net.OnEvent["combat:deaths"]    = HandleCombatDeaths;
 
             // Registra callbacks do WorldState para spawning de remotos
             if (_world != null)
@@ -103,6 +111,13 @@ namespace MMORPG
                 _world.OnPlayerJoined += SpawnRemotePlayer;
                 _world.OnPlayerLeft   += DespawnRemotePlayer;
             }
+
+            // Cria SkillBar e ItemWorldController se não atribuídos no Inspector
+            if (skillBar == null)
+                skillBar = gameObject.AddComponent<SkillBar>();
+
+            if (itemController == null)
+                itemController = gameObject.AddComponent<ItemWorldController>();
 
             // Inicia conexão
             _net.Connect();
@@ -167,19 +182,15 @@ namespace MMORPG
         // ─── Handlers de eventos do servidor ─────────────────────────────────────
         private void HandlePlayerJoined(string json)
         {
-            // Payload: {"id":"abc123","name":"Yuri","x":1200,"y":900,"hp":100,"maxHp":100,"class":"warrior"}
+            // Payload: { id, sessionToken, world, abilities:[...], state:{x,y,name,hp,...} }
             _world?.HandlePlayerJoined(json);
 
-            // Tenta extrair o ID para verificar se é o jogador local
             var idPayload = JsonUtility.FromJson<IdExtract>(json);
             if (idPayload == null || string.IsNullOrEmpty(idPayload.id)) return;
 
-            // Se ainda não temos um ID local (primeira vez que recebemos player:joined para nós)
-            // O servidor envia player:joined para o próprio jogador com SEU id
+            // Se ainda não spawnamos o jogador local, este evento é nosso
             if (string.IsNullOrEmpty(_world?.LocalPlayerId))
             {
-                // Heurística: se não há jogador local spawned, este é o nosso join
-                // Uma implementação mais robusta usaria um campo "isLocal" ou o socket ID
                 AssignLocalPlayer(idPayload.id, json);
             }
         }
@@ -291,6 +302,12 @@ namespace MMORPG
             if (_localPlayerCtrl == null)
                 Debug.LogError("[GameManager] PlayerController não encontrado no playerPrefab!");
 
+            // Constrói o visual stick man para o jogador local (cor cinza clara = local)
+            StickManBuilder.Build(_localPlayerGO, StickManBuilder.ClassColor(playerClass));
+
+            // Informa o ItemWorldController sobre o jogador local (para distância de pickup)
+            itemController?.SetLocalPlayer(_localPlayerGO.transform);
+
             // Configura a câmera para seguir o jogador
             cameraController?.SetTarget(_localPlayerGO.transform);
 
@@ -305,6 +322,14 @@ namespace MMORPG
             hud?.SetMana(stateData?.mana ?? stateData?.maxMana ?? 100, stateData?.maxMana ?? 100);
             hud?.SetXP(stateData?.xp ?? 0, stateData?.xpMax > 0 ? stateData.xpMax : 100);
             hud?.SetGold(stateData?.gold ?? 0);
+
+            // Configura a barra de skills com as abilities recebidas do servidor
+            if (data?.abilities != null && data.abilities.Length > 0)
+            {
+                var skillList = new System.Collections.Generic.List<SkillDef>(data.abilities);
+                skillBar?.Configure(skillList);
+                Debug.Log($"[GameManager] {skillList.Count} skills configuradas para {playerClass}.");
+            }
 
             _gameStarted = true;
             Debug.Log($"[GameManager] Jogador local spawnado. ID: {playerId} em {startPos}");
@@ -328,6 +353,9 @@ namespace MMORPG
             Vector3 pos = GroundSampler.Snap(new Vector3(playerData.x, 0f, playerData.z));
             var go = Instantiate(remotePlayerPrefab, pos, Quaternion.identity);
             go.name = $"RemotePlayer_{playerData.name}";
+
+            // Constrói stick man com a cor da classe do remoto
+            StickManBuilder.Build(go, StickManBuilder.ClassColor(playerData.className));
 
             _remotePlayerObjects[playerId] = go;
             Debug.Log($"[GameManager] Jogador remoto spawnado: {playerData.name} ({playerId})");
@@ -368,64 +396,10 @@ namespace MMORPG
             }
         }
 
-        // ─── Estruturas auxiliares para parsing ───────────────────────────────────
-        [System.Serializable]
-        private class IdExtract { public string id; }
-
-        // Envelope do evento "player:joined" do mmo-v1:
-        // { "id":"socketId", "world":{...}, "abilities":{...}, "state":{x,y,name,...} }
-        // Os dados do jogador ficam DENTRO de "state" — não no nível raiz.
-        [System.Serializable]
-        private class PlayerJoinData
+        private void HandleSkillResult(string json)
         {
-            public string id;
-            public PlayerJoinState state;
-        }
+            // Payload: { skillId, resolved?:true } | { skillId, rejected:'reason' } | { skillId, casting?:true }
+            var data = JsonUtility.FromJson<SkillResultData>(json);
+            if (data == null || string.IsNullOrEmpty(data.skillId)) return;
 
-        [System.Serializable]
-        private class PlayerJoinState
-        {
-            public float  x;
-            public float  y;
-            public string name;
-            public int    hp;
-            public int    maxHp;
-            public int    mana;
-            public int    maxMana;
-            public int    stamina;
-            public int    maxStamina;
-            public string playerClass;
-            public int    level;
-            public int    xp;
-            public int    xpMax;
-            public int    gold;
-        }
-
-        [System.Serializable]
-        private class PlayerXpData
-        {
-            public int xp;
-            public int gold;
-            public int totalXp;
-            public int totalGold;
-            public int xpMax;
-        }
-
-        [System.Serializable]
-        private class PlayerLevelUpData
-        {
-            public int level;
-            public int maxHp;
-            public int maxMana;
-            public int speed;
-            public int xp;
-            public int xpMax;
-        }
-
-        [System.Serializable]
-        private class PlayerRevivedData
-        {
-            public int hp;
-        }
-    }
-}
+   
