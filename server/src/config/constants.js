@@ -59,12 +59,17 @@ module.exports = {
   STATE_BROADCAST_INTERVAL_MS: 50,  // = 20Hz
   DB_SAVE_INTERVAL_MS: 30000,       // salva estado no DB a cada 30s
 
-  // ----- Modificadores de Classe -----
-  CLASS_MODIFIERS: {
-    warrior: { hp: 1.3,  mana: 0.8,  speed: 0.9,  damage: 1.1 },
-    mage:    { hp: 0.8,  mana: 1.5,  speed: 1.0,  damage: 1.3 },
-    ranger:  { hp: 0.9,  mana: 1.0,  speed: 1.2,  damage: 1.0 },
-    healer:  { hp: 1.0,  mana: 1.4,  speed: 1.0,  damage: 0.7 },
-    bruiser: { hp: 1.2,  mana: 0.9,  speed: 0.95, damage: 1.05 },
-  },
+  // ----- Economia -----
+  MARKET_TAX_RATE:         0.05,   // 5% taxa sobre vendas no mercado
+  REPAIR_COST_RATE:        0.15,   // custo de reparo = valor × (1 - durability/100) × 0.15
+  CRAFT_OVERHEAD_RATE:     0.05,   // fee de crafting = valor_item × 0.05 (silver sink)
+  CRAFT_FOCUS_MAX:         20000,  // pool máximo de focus de crafting
+  CRAFT_FOCUS_REGEN_HOUR:  2000,   // focus regenerado por hora
+  CRAFT_FOCUS_EFFICIENCY:  0.8,    // sem focus: 80% eficiência (20% materiais perdidos)
+  DURABILITY_LOSS_PER_HIT: 1,
+  MAX_DURABILITY:          100,
+
+  // ----- Status Effects — Diminishing Returns -----
+  CC_DR_TABLE:  [1.0, 0.5, 0.25, 0],  // índice = nº de aplicações da mesma CC (1-indexed: índice 0 ignorado)
+  CC_DR_RESET_MS: 15000,               // reseta DR após 15s sem a CC
 };
