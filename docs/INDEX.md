@@ -63,6 +63,8 @@ MMORPG/
 | `World/GroundSampler.cs` | Posicionamento correto dos objetos no terreno. |
 | `UI/HUD.cs` | HP, mana, XP, gold, nível, ping. |
 | `UI/SkillBar.cs` | Barra de skills (teclas **1–5**). Cria Canvas proceduralmente. Cooldown visual. |
+| `UI/RespawnPanel.cs` | Tela de morte. Countdown 8s + botão auto-revive. `Show()` / `Hide()` via GameManager. |
+| `UI/ChatUI.cs` | Chat global/zona. Enter=abrir/enviar, Tab=canal, Esc=cancelar. Fade automático. |
 
 ---
 
