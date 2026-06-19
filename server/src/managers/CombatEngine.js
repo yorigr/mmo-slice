@@ -323,7 +323,8 @@ class CombatEngine {
     }
   }
 
-  getSkillCatalog() { return ALL_SKILLS; }
+  getSkillCatalog()              { return ALL_SKILLS; }
+  getClassSkills(playerClass)    { return SKILLS[playerClass] || []; }
 }
 
 module.exports = CombatEngine;
