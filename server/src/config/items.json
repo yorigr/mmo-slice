@@ -1,0 +1,125 @@
+{
+  "_comment": "Catálogo de itens. Cada entrada define tipo, slot, stats e valor.",
+
+  "potion_small": {
+    "id": "potion_small",
+    "name": "Poção Pequena",
+    "type": "consumable",
+    "rarity": "common",
+    "description": "Restaura 30 HP.",
+    "effect": { "hp": 30 },
+    "value": 10,
+    "stackable": true,
+    "icon": "potion_red"
+  },
+  "potion_large": {
+    "id": "potion_large",
+    "name": "Poção Grande",
+    "type": "consumable",
+    "rarity": "uncommon",
+    "description": "Restaura 80 HP.",
+    "effect": { "hp": 80 },
+    "value": 30,
+    "stackable": true,
+    "icon": "potion_red_large"
+  },
+  "mana_potion": {
+    "id": "mana_potion",
+    "name": "Poção de Mana",
+    "type": "consumable",
+    "rarity": "common",
+    "description": "Restaura 40 de mana.",
+    "effect": { "mana": 40 },
+    "value": 15,
+    "stackable": true,
+    "icon": "potion_blue"
+  },
+
+  "sword_rusty": {
+    "id": "sword_rusty",
+    "name": "Espada Enferrujada",
+    "type": "equipment",
+    "slot": "weapon",
+    "rarity": "common",
+    "classes": ["warrior", "bruiser"],
+    "description": "Uma espada velha. Melhor que os punhos.",
+    "stats": { "damage": 5, "speed": -5 },
+    "value": 20,
+    "stackable": false,
+    "icon": "sword_01"
+  },
+  "axe_iron": {
+    "id": "axe_iron",
+    "name": "Machado de Ferro",
+    "type": "equipment",
+    "slot": "weapon",
+    "rarity": "uncommon",
+    "classes": ["warrior", "bruiser"],
+    "description": "Machado pesado. Alto dano, menos velocidade.",
+    "stats": { "damage": 18, "speed": -15 },
+    "value": 80,
+    "stackable": false,
+    "icon": "axe_iron"
+  },
+  "bow_bone": {
+    "id": "bow_bone",
+    "name": "Arco de Osso",
+    "type": "equipment",
+    "slot": "weapon",
+    "rarity": "common",
+    "classes": ["ranger"],
+    "description": "Arco frágil feito de ossos.",
+    "stats": { "damage": 8, "range": 30 },
+    "value": 25,
+    "stackable": false,
+    "icon": "bow_01"
+  },
+  "club_heavy": {
+    "id": "club_heavy",
+    "name": "Clava Pesada",
+    "type": "equipment",
+    "slot": "weapon",
+    "rarity": "uncommon",
+    "classes": ["bruiser"],
+    "description": "Clava de madeira reforçada.",
+    "stats": { "damage": 22, "speed": -20 },
+    "value": 90,
+    "stackable": false,
+    "icon": "club_01"
+  },
+
+  "armor_leather": {
+    "id": "armor_leather",
+    "name": "Armadura de Couro",
+    "type": "equipment",
+    "slot": "chest",
+    "rarity": "common",
+    "classes": ["warrior", "ranger", "bruiser"],
+    "description": "+15 HP máximo. Proteção leve.",
+    "stats": { "maxHp": 15, "damageReduction": 0.05 },
+    "value": 60,
+    "stackable": false,
+    "icon": "armor_leather"
+  },
+
+  "wolf_pelt": {
+    "id": "wolf_pelt",
+    "name": "Pele de Lobo",
+    "type": "material",
+    "rarity": "common",
+    "description": "Material de artesanato. Pode ser vendido.",
+    "value": 18,
+    "stackable": true,
+    "icon": "material_pelt"
+  },
+  "troll_hide": {
+    "id": "troll_hide",
+    "name": "Couro de Troll",
+    "type": "material",
+    "rarity": "uncommon",
+    "description": "Material raro. Vale bastante.",
+    "value": 75,
+    "stackable": true,
+    "icon": "material_hide"
+  }
+}
