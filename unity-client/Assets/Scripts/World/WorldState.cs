@@ -37,14 +37,25 @@ namespace MMORPG.World
         public float  z;        // Unidades Unity (= serverY / 50)
         public int    hp;
         public int    maxHp;
+        public int    mana;
+        public int    maxMana;
+        public int    stamina;
+        public int    maxStamina;
         public bool   dead;
         public string className; // "warrior", "mage", etc — para escolher prefab/material
+        // Progressão
+        public int    level;
+        public int    xp;
+        public int    xpMax;
+        public int    gold;
 
         // Calculado localmente, não vem do servidor
         [NonSerialized] public float lastUpdateTime; // Time.time da última atualização
 
         public bool IsAlive => !dead && hp > 0;
-        public float HpPercent => maxHp > 0 ? (float)hp / maxHp : 0f;
+        public float HpPercent  => maxHp   > 0 ? (float)hp   / maxHp   : 0f;
+        public float ManaPercent => maxMana > 0 ? (float)mana / maxMana : 0f;
+        public float XpPercent   => xpMax   > 0 ? (float)xp   / xpMax   : 0f;
     }
 
     /// <summary>
@@ -80,10 +91,8 @@ namespace MMORPG.World
 
         // Formato de cada jogador no array (world:update do mmo-v1):
         // { "id":"abc", "name":"Yuri", "x":1200, "y":900, "hp":100, "maxHp":100,
-        //   "dead":false, "class":"warrior", "playerClass":"warrior" }
-        // Nota: o servidor envia AMBOS "class" e "playerClass" — usamos "playerClass"
-        // porque "class" é palavra reservada em C# e JsonUtility não aceita o [FormerlySerializedAs]
-        // para esse caso (esse atributo funciona apenas com serialização de assets Unity, não JSON).
+        //   "mana":80, "maxMana":100, "stamina":100, "maxStamina":100,
+        //   "dead":false, "playerClass":"warrior", "level":1, "xp":0, "xpMax":100, "gold":0 }
         [Serializable]
         private class PlayerData
         {
@@ -93,8 +102,16 @@ namespace MMORPG.World
             public float  y;           // Pixels no servidor
             public int    hp;
             public int    maxHp;
+            public int    mana;
+            public int    maxMana;
+            public int    stamina;
+            public int    maxStamina;
             public bool   dead;
             public string playerClass; // Servidor envia "playerClass" (alias de "class") para compatibilidade C#
+            public int    level;
+            public int    xp;
+            public int    xpMax;
+            public int    gold;
         }
 
         // Formato de cada monstro no array (world:update do mmo-v1):
@@ -207,8 +224,16 @@ namespace MMORPG.World
                     z              = data.y / 50f,  // servidor Y → Unity Z
                     hp             = data.hp,
                     maxHp          = data.maxHp > 0 ? data.maxHp : 100,
+                    mana           = data.mana,
+                    maxMana        = data.maxMana > 0 ? data.maxMana : 100,
+                    stamina        = data.stamina,
+                    maxStamina     = data.maxStamina > 0 ? data.maxStamina : 100,
                     dead           = data.dead,
                     className      = data.playerClass ?? "warrior",
+                    level          = data.level > 0 ? data.level : 1,
+                    xp             = data.xp,
+                    xpMax          = data.xpMax > 0 ? data.xpMax : 100,
+                    gold           = data.gold,
                     lastUpdateTime = Time.time
                 };
 
@@ -294,8 +319,16 @@ namespace MMORPG.World
                 z              = hasState ? s.y / 50f : 0f,
                 hp             = hasState ? s.hp : 100,
                 maxHp          = hasState && s.maxHp > 0 ? s.maxHp : 100,
+                mana           = hasState ? s.mana : 100,
+                maxMana        = hasState && s.maxMana > 0 ? s.maxMana : 100,
+                stamina        = hasState ? s.stamina : 100,
+                maxStamina     = hasState && s.maxStamina > 0 ? s.maxStamina : 100,
                 dead           = false,
                 className      = hasState ? (s.playerClass ?? "warrior") : "warrior",
+                level          = hasState && s.level > 0 ? s.level : 1,
+                xp             = hasState ? s.xp : 0,
+                xpMax          = hasState && s.xpMax > 0 ? s.xpMax : 100,
+                gold           = hasState ? s.gold : 0,
                 lastUpdateTime = Time.time
             };
 
@@ -304,73 +337,77 @@ namespace MMORPG.World
         }
 
         /// <summary>
-        /// Processa "player:left" — jogador saiu do mundo.
-        /// Remove do dicionário e dispara OnPlayerLeft para que o GameManager destrua o objeto.
+        /// Processa "player:left" — remove jogador do estado.
+        /// json formato: {"id":"abc"}
         /// </summary>
         public void HandlePlayerLeft(string json)
         {
-            if (string.IsNullOrEmpty(json)) return;
-
             try
             {
-                var envelope = JsonUtility.FromJson<PlayerLeftEnvelope>(json);
-                if (envelope == null || string.IsNullOrEmpty(envelope.id)) return;
+                var data = JsonUtility.FromJson<IdPayload>(json);
+                if (data == null || string.IsNullOrEmpty(data.id)) return;
 
-                string leftId = envelope.id;
-                Players.Remove(leftId);
-                OnPlayerLeft?.Invoke(leftId);
+                Players.Remove(data.id);
+                OnPlayerLeft?.Invoke(data.id);
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[WorldState] Falha ao parsear player:left: {ex.Message}");
+                Debug.LogWarning($"[WorldState] Erro ao processar player:left: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Retorna os dados do jogador local se ele estiver no dicionário.
-        /// </summary>
-        public bool TryGetLocalPlayer(out RemotePlayer data)
-        {
-            if (!string.IsNullOrEmpty(LocalPlayerId) && Players.TryGetValue(LocalPlayerId, out data))
-                return true;
-            data = default;
-            return false;
-        }
-
-        /// <summary>
-        /// Limpa todo o estado do mundo (chamado ao desconectar/reconectar).
-        /// LocalPlayerId é resetado — será redefinido ao receber player:joined novamente.
-        /// </summary>
+        /// <summary>Limpa todo o estado (ex: ao desconectar).</summary>
         public void Clear()
         {
             Players.Clear();
-            Monsters.Clear();
             LocalPlayerId = null;
             LastServerTimestamp = 0;
         }
 
-        // ─── Estruturas auxiliares ────────────────────────────────────────────────
+        // ─── Helpers ──────────────────────────────────────────────────────────────
 
-        // Envelope do "player:joined" do mmo-v1: {id, world, abilities, state:{x,y,name,...}}
+        /// <summary>Retorna dados do jogador local, se disponível.</summary>
+        public bool TryGetLocalPlayer(out RemotePlayer player)
+        {
+            if (!string.IsNullOrEmpty(LocalPlayerId) && Players.TryGetValue(LocalPlayerId, out player))
+                return true;
+
+            player = default;
+            return false;
+        }
+
+        // Estrutura auxiliar para parsear payloads com apenas "id"
+        [Serializable]
+        private class IdPayload { public string id; }
+
+        // Envelope do evento "player:joined" do mmo-v1:
+        // { "id":"...", "world":{...}, "abilities":{...}, "state":{id,name,x,y,hp,maxHp,...} }
         [Serializable]
         private class PlayerJoinedEnvelope
         {
-            public string             id;
-            public PlayerJoinedState  state;
+            public string id;
+            public PlayerJoinedState state;
         }
 
+        // Dados do jogador dentro do envelope "player:joined"
         [Serializable]
         private class PlayerJoinedState
         {
+            public string id;
+            public string name;
             public float  x;
             public float  y;
-            public string name;
             public int    hp;
             public int    maxHp;
+            public int    mana;
+            public int    maxMana;
+            public int    stamina;
+            public int    maxStamina;
             public string playerClass;
+            public int    level;
+            public int    xp;
+            public int    xpMax;
+            public int    gold;
         }
-
-        [Serializable]
-        private class PlayerLeftEnvelope { public string id; }
     }
 }
