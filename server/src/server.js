@@ -19,9 +19,15 @@ const cors            = require('cors');
 const path            = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-const { PORT, MAP_W, MAP_H } = require('./config/constants');
+const { PORT, MAP_W, MAP_H, BLACKSMITH_X, BLACKSMITH_Y, BLACKSMITH_RANGE } = require('./config/constants');
 const { ZoneManager }        = require('./managers/ZoneManager');
 const SessionManager         = require('./managers/SessionManager');
+
+// NPCs estáticos do overworld (posição fixa, sem IA).
+// Enviados ao cliente via player:joined para renderização e detecção de proximidade.
+const STATIC_NPCS = [
+  { id: 'blacksmith_1', type: 'blacksmith', name: 'Ferreiro Aldric', x: BLACKSMITH_X, y: BLACKSMITH_Y },
+];
 
 // ----- App -----
 const app  = express();
@@ -100,6 +106,8 @@ io.on('connection', (socket) => {
       world:        { w: MAP_W, h: MAP_H },
       // abilities: array de skills ativas (derivadas do gear)
       abilities:    zone.combat.getPlayerAbilities(state),
+      // npcs: lista de NPCs estáticos da zona (posição + tipo para o cliente renderizar)
+      npcs:         STATIC_NPCS,
       state,
     });
 
@@ -197,6 +205,7 @@ io.on('connection', (socket) => {
       sessionToken: newToken,
       world:        { w: MAP_W, h: MAP_H },
       abilities:    newZone.combat.getPlayerAbilities(state),
+      npcs:         STATIC_NPCS,
       state,
     });
 
@@ -226,6 +235,27 @@ io.on('connection', (socket) => {
     if (p.casting) { socket.emit('skill:select_result', { error: 'in_combat' }); return; }
     const result = zone.players.selectSkill(p, slotKey, skillId);
     socket.emit('skill:select_result', { slotKey, skillId, abilities: zone.combat.getPlayerAbilities(p), ...result });
+  });
+
+  // ── repair:item ──────────────────────────────────────────────────────────────
+  // Repara um ou todos os slots no NPC Ferreiro. Debita ouro e restaura durabilidade.
+  // Payload: { slot: 'weapon'|'chest'|'head'|'boots'|'all' }
+  // Requer: player dentro de BLACKSMITH_RANGE do BLACKSMITH_X/Y.
+  socket.on('repair:item', ({ slot } = {}) => {
+    const zone = zones.getZone(socket.id);
+    if (!zone) return;
+    const p = zone.world.getPlayer(socket.id);
+    if (!p || p.dead) return;
+
+    // Valida proximidade ao Ferreiro
+    const dist = Math.hypot(p.x - BLACKSMITH_X, p.y - BLACKSMITH_Y);
+    if (dist > BLACKSMITH_RANGE) {
+      socket.emit('repair:result', { error: 'too_far', dist: Math.round(dist) });
+      return;
+    }
+
+    const result = zone.players.repairItem(p, slot || 'all');
+    socket.emit('repair:result', result);
   });
 
   // ── ping_rtt ─────────────────────────────────────────────────────────────────
