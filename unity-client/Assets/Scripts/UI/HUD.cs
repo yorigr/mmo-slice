@@ -37,6 +37,14 @@ namespace MMORPG.UI
         [SerializeField] private Slider manaBar;
         [SerializeField] private Image  manaFill;
 
+        [Header("XP e Gold")]
+        [Tooltip("Slider para XP (opcional — pode ser null se não houver barra de XP na UI).")]
+        [SerializeField] private Slider    xpBar;
+        [Tooltip("Texto que exibe XP atual / XP necessário (opcional).")]
+        [SerializeField] private TMP_Text  xpText;
+        [Tooltip("Texto que exibe o gold do jogador (opcional).")]
+        [SerializeField] private TMP_Text  goldText;
+
         [Header("Textos")]
         [SerializeField] private TMP_Text playerNameText;
         [SerializeField] private TMP_Text levelText;
@@ -109,9 +117,10 @@ namespace MMORPG.UI
             if (_world == null || !_world.TryGetLocalPlayer(out var localPlayer)) return;
 
             SetHP(localPlayer.hp, localPlayer.maxHp);
-
-            // Mana não vem no world:update básico — adicionar quando o servidor enviar
-            // Por enquanto, mantemos o valor atual (não regride sozinho)
+            SetMana(localPlayer.mana, localPlayer.maxMana);
+            SetXP(localPlayer.xp, localPlayer.xpMax);
+            SetGold(localPlayer.gold);
+            SetLevel(localPlayer.level > 0 ? localPlayer.level : 1);
         }
 
         // ─── Setters de UI ────────────────────────────────────────────────────────
@@ -162,6 +171,25 @@ namespace MMORPG.UI
         {
             if (levelText != null)
                 levelText.text = $"Lv {level}";
+        }
+
+        /// <summary>Atualiza barra e texto de XP. xp e xpMax em valores absolutos.</summary>
+        public void SetXP(int xp, int xpMax)
+        {
+            float ratio = xpMax > 0 ? (float)xp / xpMax : 0f;
+
+            if (xpBar != null)
+                xpBar.value = ratio;
+
+            if (xpText != null)
+                xpText.text = $"XP {xp}/{xpMax}";
+        }
+
+        /// <summary>Exibe o gold do jogador.</summary>
+        public void SetGold(int gold)
+        {
+            if (goldText != null)
+                goldText.text = $"G {gold}";
         }
 
         /// <summary>Exibe a latência em ms. Usa cor para indicar qualidade da conexão.</summary>
