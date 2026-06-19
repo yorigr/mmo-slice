@@ -1,21 +1,17 @@
-// WorldManager — coordena todo o estado de UMA zona de jogo.
-// É o único "dono" do estado; os outros managers interagem via ele.
-//
-// Mudança v2: aceita zoneId no construtor e escopa broadcasts para
-// io.to(zoneId) em vez de io.emit (global). Isso isola o estado por zona.
-const { TICK_RATE, MAP_W, MAP_H } = require('../config/constants');
+// WorldManager -- coordena todo o estado de UMA zona de jogo.
+// Mudanca v2: escopa broadcasts para io.to(zoneId) em vez de io.emit (global).
+const { TICK_RATE } = require('../config/constants');
+
+// XP necessario para o proximo level
+function xpMax(level) { return Math.floor(100 * Math.pow(level || 1, 1.5)); }
 
 class WorldManager {
-  /**
-   * @param {import('socket.io').Server} io
-   * @param {string} zoneId - ID da zona (Socket.IO room). Padrão: 'overworld'.
-   */
   constructor(io, zoneId = 'overworld') {
     this.io      = io;
     this.zoneId  = zoneId;
-    this.players  = new Map(); // socketId → PlayerState
-    this.monsters = new Map(); // monsterId → MonsterState
-    this.items    = new Map(); // itemId → ItemState (loot no chão)
+    this.players  = new Map();
+    this.monsters = new Map();
+    this.items    = new Map();
     this.events   = this._newEvents();
     this._lastTick = Date.now();
     this._tickMs   = 1000 / TICK_RATE;
@@ -23,14 +19,13 @@ class WorldManager {
 
   start() {
     this._interval = setInterval(() => this._tick(), this._tickMs);
-    console.log(`[WorldManager:${this.zoneId}] Loop iniciado a ${TICK_RATE}Hz`);
+    console.log('[WorldManager:' + this.zoneId + '] Loop iniciado a ' + TICK_RATE + 'Hz');
   }
 
   stop() {
     clearInterval(this._interval);
   }
 
-  // ----- Tick principal -----
   _tick() {
     const now = Date.now();
     this._lastTick = now;
@@ -38,8 +33,6 @@ class WorldManager {
     this.events = this._newEvents();
   }
 
-  // ----- Estado snapshot para broadcast -----
-  // Emite para io.to(zoneId) — apenas os players desta zona recebem.
   _broadcast(now) {
     const zoneEmitter = this.io.to(this.zoneId);
 
@@ -47,12 +40,17 @@ class WorldManager {
     for (const p of this.players.values()) {
       playerSnap.push({
         id: p.id, name: p.name,
-        class: p.class,          // mantido para o cliente browser HTML
-        playerClass: p.class,    // alias — C# não aceita campo 'class'
+        class: p.class,
+        playerClass: p.class,
         x: Math.round(p.x), y: Math.round(p.y),
         hp: Math.round(p.hp), maxHp: p.maxHp,
         mana: Math.round(p.mana), maxMana: p.maxMana,
+        stamina: Math.round(p.stamina), maxStamina: p.maxStamina,
         dead: p.dead,
+        level:  p.level,
+        xp:     Math.round(p.xp),
+        xpMax:  xpMax(p.level),
+        gold:   p.gold,
         casting: p.casting ? {
           abilityId: p.casting.abilityId,
           remaining: Math.max(0, p.casting.endsAt - now),
@@ -83,7 +81,6 @@ class WorldManager {
       items: itemSnap,
     });
 
-    // Emite eventos de combate acumulados no tick
     if (this.events.hits.length)       zoneEmitter.emit('combat:hits',      this.events.hits);
     if (this.events.interrupts.length) zoneEmitter.emit('combat:interrupts', this.events.interrupts);
     if (this.events.deaths.length)     zoneEmitter.emit('combat:deaths',     this.events.deaths);
@@ -91,7 +88,6 @@ class WorldManager {
 
   _newEvents() { return { hits: [], interrupts: [], deaths: [] }; }
 
-  // ----- Helpers públicos usados pelos managers -----
   addPlayer(state)  { this.players.set(state.id, state); }
   removePlayer(id)  { this.players.delete(id); }
   getPlayer(id)     { return this.players.get(id); }
