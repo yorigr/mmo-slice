@@ -51,15 +51,18 @@ MMORPG/
 
 | Script | Responsabilidade |
 |--------|-----------------|
-| `GameManager.cs` | Orquestrador. Persiste sessionToken (PlayerPrefs) para reconexão. |
+| `GameManager.cs` | Orquestrador. Persiste sessionToken. Cria SkillBar e ItemWorldController se não atribuídos. |
+| `StickManBuilder.cs` | Cria stick man proceduralmente (sem assets). `Build(go, color)` + `ClassColor("warrior")`. |
 | `Network/NetworkManager.cs` | WebSocket puro + Socket.IO v4. Sem dependências externas. |
 | `Network/SocketIOParser.cs` | Decodifica Engine.IO v4. Não modificar sem entender o protocolo. |
-| `Player/PlayerController.cs` | Input, envio de player:move, interpolação de outros players. |
+| `Player/PlayerController.cs` | Input, envio de player:move, reconciliação de posição. |
 | `Player/CameraController.cs` | Câmera isométrica. |
-| `World/WorldState.cs` | Estado local (players, monstros). Deserializa pacotes do servidor. |
-| `World/MonsterController.cs` | Representação visual dos monstros. |
+| `World/WorldState.cs` | Estado local (players, monstros, **itens**). Deserializa world:update. |
+| `World/MonsterController.cs` | Representação visual dos monstros com barra de HP. |
+| `World/ItemWorldController.cs` | Itens no chão do mundo. Tecla **E** para coletar o mais próximo. |
 | `World/GroundSampler.cs` | Posicionamento correto dos objetos no terreno. |
-| `UI/HUD.cs` | HP, mana, XP, gold. Atualiza do WorldState. |
+| `UI/HUD.cs` | HP, mana, XP, gold, nível, ping. |
+| `UI/SkillBar.cs` | Barra de skills (teclas **1–5**). Cria Canvas proceduralmente. Cooldown visual. |
 
 ---
 
@@ -79,17 +82,18 @@ MMORPG/
 ### Servidor → Cliente
 | Evento | Descrição |
 |--------|-----------|
-| `player:joined` | Confirmação, estado inicial, abilities, sessionToken |
-| `world:state` | Snapshot a 20Hz |
-| `combat:hit` | Dano (from, to, damage, crit, hp) |
-| `combat:dodge` | Esquiva |
-| `combat:death` | Morte |
-| `combat:interrupt` | Cast interrompido |
-| `player:levelup` | Novo level e stats |
-| `skill:result` | Feedback de skill:use |
-| `item:picked` | Item coletado |
-| `chat:message` | Mensagem de chat |
-| `pong_rtt` | Resposta de latência |
+| `player:joined` | Confirmação, abilities (array da classe), sessionToken, state |
+| `world:update` | Snapshot a 20Hz — players, monsters, **items** |
+| `combat:hits` | Array de hits por tick `[{from,to,damage,crit,hp}]` |
+| `combat:deaths` | Array de mortes por tick `[{id,killerId}]` |
+| `combat:interrupts` | Casts interrompidos por tick |
+| `player:levelup` | `{level, maxHp, maxMana, speed, xp, xpMax}` |
+| `player:xp` | `{xp, gold, totalXp, totalGold, xpMax}` |
+| `player:revived` | `{hp}` — ressuscitado por outro jogador |
+| `skill:result` | `{skillId, resolved?} | {skillId, rejected:'reason'}` |
+| `item:picked` | Item coletado com sucesso `{item:{id,type,...}}` |
+| `chat:message` | `{channel, from, message, ts}` |
+| `pong_rtt` | Resposta de latência (timestamp espelhado) |
 
 ---
 
