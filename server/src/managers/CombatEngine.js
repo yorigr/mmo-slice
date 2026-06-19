@@ -13,7 +13,11 @@
 //   Resetado após CC_DR_RESET_MS sem aquela CC
 
 const SKILLS = require('../config/skills.json');
-const { CRIT_CHANCE_BASE, CRIT_MULTIPLIER, MAP_W, MAP_H, CC_DR_TABLE, CC_DR_RESET_MS } = require('../config/constants');
+const {
+  CRIT_CHANCE_BASE, CRIT_MULTIPLIER, MAP_W, MAP_H,
+  CC_DR_TABLE, CC_DR_RESET_MS,
+  DURABILITY_LOSS_PER_HIT,
+} = require('../config/constants');
 
 // CC types que sofrem Diminishing Returns
 const CC_TYPES_WITH_DR = new Set(['stun', 'root', 'slow', 'knockback']);
@@ -130,10 +134,28 @@ class CombatEngine {
 
     this.world.emitHit({ from: attackerId, to: target.id, damage: finalDmg, crit: isCrit, hp: target.hp });
 
+    // Desgaste de durabilidade: hit causa -1 ponto em uma peça de armadura aleatória.
+    // Só aplica se o player sobreviveu ao hit (mortos são tratados abaixo).
+    if (target.hp > 0 && target.equipment && target.durability) {
+      const armorSlots = ['chest', 'head', 'boots'].filter(s => target.equipment[s]);
+      if (armorSlots.length > 0) {
+        const hitSlot = armorSlots[Math.floor(Math.random() * armorSlots.length)];
+        target.durability[hitSlot] = Math.max(0,
+          (target.durability[hitSlot] ?? 100) - DURABILITY_LOSS_PER_HIT
+        );
+      }
+    }
+
     if (target.hp <= 0 && !target.dead) {
-      target.dead    = true;
-      target.casting = null;
+      target.dead          = true;
+      target.casting       = null;
       target.statusEffects = {};
+
+      // Processa destruição/drop de itens antes de registrar a morte.
+      // zoneType vem do WorldManager da zona onde o combate ocorreu.
+      const deathLoot = this.players.handlePlayerDeath(target, this.world.zoneType);
+      this.world.io.to(target.id).emit('player:death_loot', deathLoot);
+
       this.world.emitDeath({ id: target.id, killerId: attackerId });
       this.players.scheduleRespawn(target);
     }
