@@ -4,7 +4,9 @@ const { v4: uuidv4 } = require('uuid');
 const {
   MAX_HP, MAX_MANA, MAX_STAMINA, MAX_SPEED, MANA_REGEN_PER_SEC,
   STAMINA_REGEN_PER_SEC, RESPAWN_MS, MAP_W, MAP_H, MAX_LEVEL,
-  MAX_DURABILITY, CRAFT_FOCUS_MAX,
+  MAX_DURABILITY, DURABILITY_DEATH_PENALTY, CRAFT_FOCUS_MAX,
+  DEATH_DESTROY_RATES, DEATH_RESOURCE_LOSS_RATE,
+  REPAIR_BASE_VALUES, REPAIR_COST_RATE,
 } = require('../config/constants');
 const GEAR = require('../config/gear.json');
 
@@ -16,13 +18,14 @@ function xpNeededForLevel(level) {
 const PLAYER_RADIUS = 22;
 
 // Estatísticas base derivadas do gear equipado.
-// Soma os stats de todas as peças de equipamento.
-function computeGearStats(equipment) {
+// Peças com durabilidade 0 estão quebradas e não fornecem stats.
+function computeGearStats(equipment, durability = {}) {
   const stats = { maxHp: 0, maxMana: 0, speed: 0, damageReduction: 0 };
   if (!equipment) return stats;
 
   for (const [slot, armorId] of Object.entries(equipment)) {
     if (slot === 'weapon' || !armorId) continue;
+    if ((durability[slot] ?? MAX_DURABILITY) === 0) continue;  // quebrado → sem stats
     const armorDef = GEAR.armors[armorId];
     if (!armorDef || !armorDef.stats) continue;
     for (const [k, v] of Object.entries(armorDef.stats)) {
@@ -55,7 +58,10 @@ class PlayerManager {
       head_D:   null,
     };
 
-    const gearStats = computeGearStats(starterEquipment);
+    // Durabilidade inicial: todas as peças em 100%
+    const starterDurability = { weapon: MAX_DURABILITY, chest: MAX_DURABILITY, head: MAX_DURABILITY, boots: MAX_DURABILITY };
+
+    const gearStats = computeGearStats(starterEquipment, starterDurability);
     const maxHp    = MAX_HP   + (gearStats.maxHp   || 0);
     const maxMana  = MAX_MANA + (gearStats.maxMana  || 0);
     const speed    = MAX_SPEED + (gearStats.speed   || 0);
@@ -96,8 +102,9 @@ class PlayerManager {
       gold:   0,
 
       // Gear-based
-      equipment:     starterEquipment,   // { weapon, chest, head, boots }
+      equipment:     starterEquipment,    // { weapon, chest, head, boots }
       selectedSkills: starterSkills,      // { weapon_Q, weapon_W, weapon_E, chest_R, head_D }
+      durability:    starterDurability,   // { weapon, chest, head, boots } — 0–100 por slot
 
       // Inventário
       inventory: [],
@@ -130,23 +137,34 @@ class PlayerManager {
   }
 
   // Retorna o array de skills ativas (até 5) baseado no equipment atual.
-  // Usado em player:joined para informar o cliente.
+  // Peças com durabilidade 0 estão quebradas: skill do slot retorna null.
   getActiveSkillIds(player) {
-    const s = player.selectedSkills || {};
+    const s   = player.selectedSkills || {};
+    const dur = player.durability || {};
+    const weaponOk = (dur.weapon ?? MAX_DURABILITY) > 0;
+    const chestOk  = (dur.chest  ?? MAX_DURABILITY) > 0;
+    const headOk   = (dur.head   ?? MAX_DURABILITY) > 0;
     return [
-      s.weapon_Q || null,
-      s.weapon_W || null,
-      s.weapon_E || null,
-      s.chest_R  || null,
-      s.head_D   || null,
+      weaponOk ? (s.weapon_Q || null) : null,
+      weaponOk ? (s.weapon_W || null) : null,
+      weaponOk ? (s.weapon_E || null) : null,
+      chestOk  ? (s.chest_R  || null) : null,
+      headOk   ? (s.head_D   || null) : null,
     ];
   }
 
-  // Valida se o player pode usar uma skill (tem ela no gear selecionado).
+  // Valida se o player pode usar uma skill (tem ela equipada e a peça não está quebrada).
   playerHasSkill(player, skillId) {
     if (!skillId) return false;
-    const s = player.selectedSkills || {};
-    return Object.values(s).includes(skillId);
+    const s   = player.selectedSkills || {};
+    const dur = player.durability || {};
+
+    // Mapeia cada skill ao slot de equipment que a fornece
+    const weaponSkills = [s.weapon_Q, s.weapon_W, s.weapon_E];
+    if (weaponSkills.includes(skillId)) return (dur.weapon ?? MAX_DURABILITY) > 0;
+    if (s.chest_R === skillId) return (dur.chest ?? MAX_DURABILITY) > 0;
+    if (s.head_D  === skillId) return (dur.head  ?? MAX_DURABILITY) > 0;
+    return false;
   }
 
   handleMove(playerId, { x, y }, now = Date.now()) {
@@ -217,6 +235,91 @@ class PlayerManager {
     this.world.removePlayer(socketId);
   }
 
+  /**
+   * Processa destruição e drop de itens ao morrer.
+   * Chamado por CombatEngine antes de scheduleRespawn.
+   *
+   * @param {object} player    - State do player que morreu
+   * @param {string} zoneType  - 'safe' | 'yellow' | 'red' | 'black'
+   * @returns {{ destroyed: Array, dropped: Array, kept: Array }}
+   */
+  handlePlayerDeath(player, zoneType = 'yellow') {
+    const rate = (DEATH_DESTROY_RATES[zoneType] ?? DEATH_DESTROY_RATES.yellow);
+    const canLoot = (zoneType === 'red' || zoneType === 'black');
+
+    const destroyed = [];
+    const dropped   = [];
+    const kept      = [];
+
+    if (rate === 0) return { destroyed, dropped, kept };
+
+    // Mapa de slot de equipment → slots de skill relacionados
+    const SLOT_TO_SKILLS = {
+      weapon: ['weapon_Q', 'weapon_W', 'weapon_E'],
+      chest:  ['chest_R'],
+      head:   ['head_D'],
+      boots:  [],          // boots ainda não tem skill slot ativo
+    };
+
+    // Processa cada peça de equipment individualmente
+    for (const [slot, gearId] of Object.entries(player.equipment)) {
+      if (!gearId) continue;
+
+      if (Math.random() < rate) {
+        // Destruído permanentemente
+        player.equipment[slot] = null;
+        for (const sk of (SLOT_TO_SKILLS[slot] || [])) {
+          player.selectedSkills[sk] = null;
+        }
+        destroyed.push({ slot, gearId });
+
+      } else if (canLoot) {
+        // Dropa no mundo (lootável em red/black zones)
+        const itemId = uuidv4();
+        this.world.addItem({
+          id:   itemId,
+          type: gearId,
+          x:    player.x + (Math.random() - 0.5) * 60,
+          y:    player.y + (Math.random() - 0.5) * 60,
+        });
+        player.equipment[slot] = null;
+        for (const sk of (SLOT_TO_SKILLS[slot] || [])) {
+          player.selectedSkills[sk] = null;
+        }
+        dropped.push({ slot, gearId, itemId });
+
+      } else {
+        // Mantido (yellow zone: destruição possível mas sem loot por outros)
+        kept.push({ slot, gearId });
+      }
+    }
+
+    // Destroi 10% de cada stack de material no inventário
+    for (const item of player.inventory) {
+      if (item.qty && item.qty > 0) {
+        const loss = Math.ceil(item.qty * DEATH_RESOURCE_LOSS_RATE);
+        item.qty = Math.max(0, item.qty - loss);
+      }
+    }
+    // Remove stacks zerados do inventário
+    player.inventory = player.inventory.filter(i => !i.qty || i.qty > 0);
+
+    // Penalidade de durabilidade nas peças que sobreviveram (não foram destruídas nem dropadas)
+    // -DURABILITY_DEATH_PENALTY pontos por morte
+    if (!player.durability) player.durability = {};
+    for (const { slot } of kept) {
+      player.durability[slot] = Math.max(0,
+        (player.durability[slot] ?? MAX_DURABILITY) - DURABILITY_DEATH_PENALTY
+      );
+    }
+    // Peças destruídas/dropadas já saíram do equipment; zera durabilidade do slot
+    for (const { slot } of [...destroyed, ...dropped]) {
+      player.durability[slot] = 0;
+    }
+
+    return { destroyed, dropped, kept };
+  }
+
   scheduleRespawn(player) {
     setTimeout(() => {
       if (!player.dead) return; // já ressuscitado por outro jogador
@@ -271,6 +374,7 @@ class PlayerManager {
       // Valida que existe no gear.json
       if (!GEAR.weapons[gearId]) return { error: 'unknown_weapon' };
       player.equipment.weapon = gearId;
+      player.durability.weapon = MAX_DURABILITY;  // item recém-equipado começa inteiro
 
       // Reset skill selection para defaults da nova arma
       const wDef = GEAR.weapons[gearId];
@@ -284,13 +388,15 @@ class PlayerManager {
       if (aDef.slot !== slot) return { error: 'wrong_slot' };
 
       player.equipment[slot] = gearId;
+      player.durability[slot] = MAX_DURABILITY;  // item recém-equipado começa inteiro
+
       // Reset skill selection para default da nova armadura
       const skillSlot = armorSlotMap[slot];
       if (skillSlot) player.selectedSkills[skillSlot] = aDef.skill.options[0];
     }
 
-    // Recalcula stats de gear
-    const gs = computeGearStats(player.equipment);
+    // Recalcula stats de gear (respeita durabilidade das outras peças)
+    const gs = computeGearStats(player.equipment, player.durability);
     player.maxHp   = MAX_HP   + (gs.maxHp   || 0) + Math.round(player.level * 5);
     player.maxMana = MAX_MANA + (gs.maxMana  || 0);
     player.damageReduction = gs.damageReduction || 0;
@@ -322,6 +428,57 @@ class PlayerManager {
 
     player.selectedSkills[slotKey] = skillId;
     return { ok: true };
+  }
+
+  /**
+   * Repara um ou todos os slots de equipment, cobrando ouro.
+   * Deve ser chamado apenas quando o player está próximo do NPC Ferreiro.
+   *
+   * @param {object} player
+   * @param {string} slot - nome do slot ('weapon'|'chest'|'head'|'boots') ou 'all'
+   * @returns {{ ok?, error?, totalCost?, repairs?, gold? }}
+   */
+  repairItem(player, slot) {
+    if (!player.durability) player.durability = {};
+
+    const validSlots = ['weapon', 'chest', 'head', 'boots'];
+    const slotsToRepair = slot === 'all'
+      ? validSlots.filter(s => player.equipment[s])
+      : (validSlots.includes(slot) ? [slot] : []);
+
+    if (slotsToRepair.length === 0)
+      return { error: slot === 'all' ? 'nothing_equipped' : 'invalid_slot' };
+
+    // Calcula custo total antes de debitar
+    let totalCost = 0;
+    const repairs = [];
+    for (const s of slotsToRepair) {
+      const gearId = player.equipment[s];
+      if (!gearId) continue;
+      const curDur = player.durability[s] ?? MAX_DURABILITY;
+      if (curDur >= MAX_DURABILITY) continue;  // já está inteiro
+      const baseValue = REPAIR_BASE_VALUES[gearId] || 100;
+      const cost = Math.ceil(baseValue * (1 - curDur / MAX_DURABILITY) * REPAIR_COST_RATE);
+      repairs.push({ slot: s, gearId, fromDurability: curDur, cost });
+      totalCost += cost;
+    }
+
+    if (repairs.length === 0) return { error: 'already_repaired' };
+    if (player.gold < totalCost) return { error: 'not_enough_gold', cost: totalCost, gold: player.gold };
+
+    // Debita ouro e restaura durabilidade
+    player.gold -= totalCost;
+    for (const r of repairs) {
+      player.durability[r.slot] = MAX_DURABILITY;
+    }
+
+    // Recalcula stats (peças antes quebradas podem voltar a dar stats)
+    const gs = computeGearStats(player.equipment, player.durability);
+    player.maxHp   = MAX_HP   + (gs.maxHp   || 0) + Math.round(player.level * 5);
+    player.maxMana = MAX_MANA + (gs.maxMana  || 0);
+    player.damageReduction = gs.damageReduction || 0;
+
+    return { ok: true, totalCost, repairs, gold: player.gold };
   }
 
   _resolveCollisions(p) {
