@@ -73,6 +73,19 @@ namespace MMORPG.World
         public int    maxHp;
     }
 
+    /// <summary>
+    /// Item no chão do mundo, recebido em world:update.
+    /// Coordenadas em espaço Unity.
+    /// </summary>
+    [Serializable]
+    public struct WorldItem
+    {
+        public string id;
+        public string type; // ex: "potion_small", "sword_rusty"
+        public float  x;   // Unidades Unity (= serverX / 50)
+        public float  z;   // Unidades Unity (= serverY / 50)
+    }
+
     // ─── MonoBehaviour ────────────────────────────────────────────────────────────
 
     public class WorldState : MonoBehaviour
@@ -80,13 +93,25 @@ namespace MMORPG.World
         // ─── Estruturas de parsing JSON (espelham o protocolo do servidor) ────────────
 
         // Formato do payload world:update:
-        // { "players": [...], "t": 12345 }
+        // { "players": [...], "monsters": [...], "items": [...], "t": 12345 }
         [Serializable]
         private class WorldUpdatePayload
         {
             public PlayerData[]   players;
             public MonsterData[]  monsters;
+            public ItemData[]     items;
             public long t; // servidor envia "t" (não "timestamp")
+        }
+
+        // Formato de cada item no array:
+        // { "id":"item_uuid", "type":"potion_small", "x":1200, "y":900 }
+        [Serializable]
+        private class ItemData
+        {
+            public string id;
+            public string type;
+            public float  x;  // Pixels no servidor
+            public float  y;  // Pixels no servidor
         }
 
         // Formato de cada jogador no array (world:update do mmo-v1):
@@ -140,6 +165,9 @@ namespace MMORPG.World
 
         /// <summary>Todos os monstros ativos, indexados por ID.</summary>
         public Dictionary<string, RemoteMonster> Monsters { get; } = new();
+
+        /// <summary>Itens no chão do mundo, indexados por ID.</summary>
+        public Dictionary<string, WorldItem> Items { get; } = new();
 
         /// <summary>Socket ID do jogador local (definido pelo GameManager após join).</summary>
         public string LocalPlayerId { get; set; }
@@ -291,6 +319,32 @@ namespace MMORPG.World
                 foreach (string mid in deadMonsters)
                     Monsters.Remove(mid);
             }
+
+            // ── Processa itens no chão ────────────────────────────────────────────
+            if (payload.items != null)
+            {
+                var itemIds = new HashSet<string>(payload.items.Length);
+
+                foreach (var it in payload.items)
+                {
+                    if (string.IsNullOrEmpty(it?.id)) continue;
+                    itemIds.Add(it.id);
+                    Items[it.id] = new WorldItem
+                    {
+                        id   = it.id,
+                        type = it.type ?? "unknown",
+                        x    = it.x / 50f,
+                        z    = it.y / 50f,
+                    };
+                }
+
+                // Remove itens que foram coletados ou desapareceram
+                var pickedUp = new List<string>();
+                foreach (string iid in Items.Keys)
+                    if (!itemIds.Contains(iid)) pickedUp.Add(iid);
+                foreach (string iid in pickedUp)
+                    Items.Remove(iid);
+            }
         }
 
         /// <summary>
@@ -348,66 +402,4 @@ namespace MMORPG.World
                 if (data == null || string.IsNullOrEmpty(data.id)) return;
 
                 Players.Remove(data.id);
-                OnPlayerLeft?.Invoke(data.id);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[WorldState] Erro ao processar player:left: {ex.Message}");
-            }
-        }
-
-        /// <summary>Limpa todo o estado (ex: ao desconectar).</summary>
-        public void Clear()
-        {
-            Players.Clear();
-            LocalPlayerId = null;
-            LastServerTimestamp = 0;
-        }
-
-        // ─── Helpers ──────────────────────────────────────────────────────────────
-
-        /// <summary>Retorna dados do jogador local, se disponível.</summary>
-        public bool TryGetLocalPlayer(out RemotePlayer player)
-        {
-            if (!string.IsNullOrEmpty(LocalPlayerId) && Players.TryGetValue(LocalPlayerId, out player))
-                return true;
-
-            player = default;
-            return false;
-        }
-
-        // Estrutura auxiliar para parsear payloads com apenas "id"
-        [Serializable]
-        private class IdPayload { public string id; }
-
-        // Envelope do evento "player:joined" do mmo-v1:
-        // { "id":"...", "world":{...}, "abilities":{...}, "state":{id,name,x,y,hp,maxHp,...} }
-        [Serializable]
-        private class PlayerJoinedEnvelope
-        {
-            public string id;
-            public PlayerJoinedState state;
-        }
-
-        // Dados do jogador dentro do envelope "player:joined"
-        [Serializable]
-        private class PlayerJoinedState
-        {
-            public string id;
-            public string name;
-            public float  x;
-            public float  y;
-            public int    hp;
-            public int    maxHp;
-            public int    mana;
-            public int    maxMana;
-            public int    stamina;
-            public int    maxStamina;
-            public string playerClass;
-            public int    level;
-            public int    xp;
-            public int    xpMax;
-            public int    gold;
-        }
-    }
-}
+                OnPlayerLeft?.
