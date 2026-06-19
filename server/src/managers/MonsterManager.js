@@ -1,17 +1,10 @@
-// MonsterManager — spawn, IA, morte e loot de monstros
-//
-// v2 — Bug fix crítico:
-//   - aiTick agora chama onMonsterDeath() quando hp <= 0 (antes só removia sem XP/loot)
-//   - monster.lastHitBy rastreado pelo CombatEngine.applyDamageToMonster()
-//   - Auto-respawn movido para Zone.start() (usa MONSTER_SPAWN_INTERVAL_MS)
-//
+// MonsterManager -- spawn, IA, morte e loot de monstros
 const { v4: uuidv4 } = require('uuid');
 const {
   MONSTER_AI_TICK_MS, MONSTER_AGGRO_RANGE, MONSTER_LEASH_RANGE,
   MAP_W, MAP_H, LOOT_DESPAWN_MS,
 } = require('../config/constants');
 
-// Definições de monstros — serão movidas para monsters.json na Phase 3
 const MONSTER_TYPES = {
   goblin: {
     name: 'Goblin', hp: 40, maxHp: 40, speed: 120,
@@ -27,9 +20,9 @@ const MONSTER_TYPES = {
     damage: 18, range: 65, attackCooldown: 2000,
     xpReward: 70, goldReward: [15, 40],
     lootTable: [
-      { itemId: 'axe_iron',       chance: 0.20 },
-      { itemId: 'armor_leather',  chance: 0.10 },
-      { itemId: 'potion_small',   chance: 0.40 },
+      { itemId: 'axe_iron',      chance: 0.20 },
+      { itemId: 'armor_leather', chance: 0.10 },
+      { itemId: 'potion_small',  chance: 0.40 },
     ],
   },
   skeleton: {
@@ -68,8 +61,6 @@ class MonsterManager {
     this._aiTimer = 0;
   }
 
-  // ----- Spawn -----
-
   spawnRandom() {
     const types = Object.keys(MONSTER_TYPES);
     const type  = types[Math.floor(Math.random() * types.length)];
@@ -92,16 +83,17 @@ class MonsterManager {
       damage: def.damage, range: def.range,
       attackCooldown: def.attackCooldown, lastAttackAt: 0,
       xpReward: def.xpReward, goldReward: def.goldReward, lootTable: def.lootTable,
-      target: null,    // socketId do alvo atual
-      state:  'idle',  // idle | aggro | returning
-      lastHitBy: null, // socketId do último player que acertou (para XP)
+      target: null,
+      state:  'idle',
+      lastHitBy: null,
+      rooted: false,
+      rootedUntil: 0,
     };
 
     this.world.addMonster(state);
     return state;
   }
 
-  // ----- AI tick (chamado pelo WorldManager via Zone) -----
   aiTick(now) {
     this._aiTimer += this.world._tickMs;
     if (this._aiTimer < MONSTER_AI_TICK_MS) return;
@@ -110,14 +102,15 @@ class MonsterManager {
     const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
     for (const m of this.world.monsters.values()) {
-      // BUG FIX v2: chama onMonsterDeath() em vez de removeMonster() diretamente.
-      // Isso garante que XP, gold e loot sejam distribuídos.
       if (m.hp <= 0) {
         this.onMonsterDeath(m, m.lastHitBy || null);
         continue;
       }
 
-      // --- Encontrar alvo ---
+      // Limpa root expirado
+      if (m.rooted && now >= m.rootedUntil) m.rooted = false;
+
+      // Encontrar alvo
       if (!m.target || m.state === 'idle') {
         let closest = null, closestD = MONSTER_AGGRO_RANGE;
         for (const p of this.world.players.values()) {
@@ -128,7 +121,6 @@ class MonsterManager {
         if (closest) { m.target = closest.id; m.state = 'aggro'; }
       }
 
-      // --- Estado: aggro ---
       if (m.state === 'aggro' && m.target) {
         const target = this.world.getPlayer(m.target);
 
@@ -137,17 +129,14 @@ class MonsterManager {
         } else {
           const d = dist(m, target);
 
-          // Leash — muito longe do spawn
           if (dist(m, { x: m.spawnX, y: m.spawnY }) > MONSTER_LEASH_RANGE) {
             m.target = null; m.state = 'returning';
           } else if (d <= m.range) {
-            // Ataque
-            if (now - m.lastAttackAt >= m.attackCooldown) {
+            if (!m.rooted && now - m.lastAttackAt >= m.attackCooldown) {
               m.lastAttackAt = now;
               this.combat.applyDamage(target, m.damage, null);
             }
-          } else {
-            // Move em direção ao alvo
+          } else if (!m.rooted) {
             const angle = Math.atan2(target.y - m.y, target.x - m.x);
             const step  = m.speed * (MONSTER_AI_TICK_MS / 1000);
             m.x += Math.cos(angle) * step;
@@ -156,13 +145,12 @@ class MonsterManager {
         }
       }
 
-      // --- Estado: returning ---
       if (m.state === 'returning') {
         const dx = m.spawnX - m.x, dy = m.spawnY - m.y;
         const d  = Math.hypot(dx, dy);
         if (d < 5) {
           m.x = m.spawnX; m.y = m.spawnY; m.state = 'idle';
-          m.hp = m.maxHp; // regen total ao voltar ao spawn
+          m.hp = m.maxHp;
         } else {
           const step = m.speed * (MONSTER_AI_TICK_MS / 1000) * 1.5;
           m.x += (dx / d) * step;
@@ -172,13 +160,9 @@ class MonsterManager {
     }
   }
 
-  // ----- Morte do monstro -----
-  // v2: agora realmente chamado. Distribui XP, gold e loot.
   onMonsterDeath(monster, killerId) {
-    // Remove imediatamente para não processar novamente
     this.world.removeMonster(monster.id);
 
-    // XP e gold para o killer (último player que acertou)
     if (killerId) {
       const killer = this.world.getPlayer(killerId);
       if (killer) {
@@ -189,15 +173,19 @@ class MonsterManager {
         killer.gold  += gold;
 
         this.world.io.to(killerId).emit('player:xp', {
-          xp:   monster.xpReward,
+          xp:        monster.xpReward,
           gold,
           totalXp:   killer.xp,
           totalGold: killer.gold,
+          xpMax:     Math.floor(100 * Math.pow(killer.level, 1.5)),
         });
+
+        // Verifica level up
+        this.combat.players.checkLevelUp(killer);
       }
     }
 
-    // Loot drop no chão
+    // Loot drop no chao
     for (const entry of monster.lootTable) {
       if (Math.random() < entry.chance) {
         const item = {
@@ -207,7 +195,6 @@ class MonsterManager {
           y:    monster.y + (Math.random() - 0.5) * 30,
         };
         this.world.addItem(item);
-        // Despawn automático após LOOT_DESPAWN_MS
         setTimeout(() => this.world.removeItem(item.id), LOOT_DESPAWN_MS);
       }
     }
