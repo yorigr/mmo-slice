@@ -54,7 +54,7 @@ io.on('connection', (socket) => {
   //   { id, sessionToken, world: {w,h}, abilities, state }
   //   O cliente deve armazenar sessionToken (Unity: PlayerPrefs) e reenviá-lo
   //   no próximo player:join para ativar a reconexão.
-  socket.on('player:join', ({ name, playerClass, sessionToken, zoneId: reqZoneId } = {}) => {
+  socket.on('player:join', ({ name, sessionToken, zoneId: reqZoneId } = {}) => {
     const zoneId = reqZoneId || 'overworld';
 
     // Tenta restaurar sessão (30s de janela)
@@ -71,21 +71,26 @@ io.on('connection', (socket) => {
     const newToken = uuidv4();
     socketTokens.set(socket.id, newToken);
 
-    // Cria player na zona e entra no Socket.IO room
-    const { zone, state } = zones.joinZone(socket, zoneId, { name, playerClass });
+    // Cria player na zona (sem classe — gear-based)
+    const { zone, state } = zones.joinZone(socket, zoneId, { name });
 
-    // Aplica estado restaurado (preserva progressão, posição, recursos)
+    // Aplica estado restaurado (preserva progressão, posição, recursos, gear)
     if (restoredState) {
       Object.assign(state, {
-        x:         restoredState.x,
-        y:         restoredState.y,
-        hp:        Math.max(1, restoredState.hp), // não ressuscita mortos na reconexão
-        mana:      restoredState.mana,
-        stamina:   restoredState.stamina,
-        xp:        restoredState.xp,
-        gold:      restoredState.gold,
-        level:     restoredState.level,
-        inventory: restoredState.inventory || [],
+        x:              restoredState.x,
+        y:              restoredState.y,
+        hp:             Math.max(1, restoredState.hp),
+        mana:           restoredState.mana,
+        stamina:        restoredState.stamina,
+        xp:             restoredState.xp,
+        gold:           restoredState.gold,
+        level:          restoredState.level,
+        inventory:      restoredState.inventory      || [],
+        equipment:      restoredState.equipment      || state.equipment,
+        selectedSkills: restoredState.selectedSkills || state.selectedSkills,
+        gatheringSkills: restoredState.gatheringSkills || state.gatheringSkills,
+        craftingSkills:  restoredState.craftingSkills  || state.craftingSkills,
+        craftingFocus:   restoredState.craftingFocus   ?? state.craftingFocus,
       });
     }
 
@@ -93,12 +98,12 @@ io.on('connection', (socket) => {
       id:           socket.id,
       sessionToken: newToken,
       world:        { w: MAP_W, h: MAP_H },
-      // Array com apenas as skills da classe do jogador (5 skills) para o SkillBar do cliente
-      abilities:    zone.combat.getClassSkills(state.class),
+      // abilities: array de skills ativas (derivadas do gear)
+      abilities:    zone.combat.getPlayerAbilities(state),
       state,
     });
 
-    console.log(`  join: ${name} (${playerClass}) → zona "${zoneId}"`);
+    console.log(`  join: ${name} → zona "${zoneId}"`);
   });
 
   // ── player:move ─────────────────────────────────────────────────────────────
@@ -172,29 +177,55 @@ io.on('connection', (socket) => {
     const newToken = uuidv4();
     socketTokens.set(socket.id, newToken);
 
-    const { zone: newZone, state } = zones.joinZone(socket, zoneId, {
-      name:        player.name,
-      playerClass: player.class,
-    });
+    const { zone: newZone, state } = zones.joinZone(socket, zoneId, { name: player.name });
 
-    // Aplica stats do player anterior
+    // Aplica estado do player anterior (preserva gear e skills)
     Object.assign(state, {
       hp: player.hp, maxHp: player.maxHp,
       mana: player.mana, maxMana: player.maxMana,
       stamina: player.stamina,
       xp: player.xp, gold: player.gold, level: player.level,
-      inventory: player.inventory || [],
+      inventory:      player.inventory      || [],
+      equipment:      player.equipment      || state.equipment,
+      selectedSkills: player.selectedSkills || state.selectedSkills,
+      gatheringSkills: player.gatheringSkills || state.gatheringSkills,
+      craftingSkills:  player.craftingSkills  || state.craftingSkills,
     });
 
     socket.emit('player:joined', {
       id:           socket.id,
       sessionToken: newToken,
       world:        { w: MAP_W, h: MAP_H },
-      abilities:    newZone.combat.getClassSkills(state.class),
+      abilities:    newZone.combat.getPlayerAbilities(state),
       state,
     });
 
     console.log(`  zone:change ${player.name} → "${zoneId}"`);
+  });
+
+  // ── gear:equip ───────────────────────────────────────────────────────────────
+  // Payload: { slot: 'weapon'|'chest'|'head'|'boots', gearId: string }
+  // Equipa uma peça de gear. Skills do slot são resetadas para o padrão do gear.
+  socket.on('gear:equip', ({ slot, gearId } = {}) => {
+    const zone = zones.getZone(socket.id);
+    if (!zone) return;
+    const p = zone.world.getPlayer(socket.id);
+    if (!p || p.dead) return;
+    const result = zone.players.equipItem(p, slot, gearId);
+    socket.emit('gear:equipped', { slot, gearId, abilities: zone.combat.getPlayerAbilities(p), ...result });
+  });
+
+  // ── skill:select ─────────────────────────────────────────────────────────────
+  // Payload: { slotKey: 'weapon_Q'|..., skillId: string }
+  // Altera qual skill está ativa em um slot de gear (fora de combate).
+  socket.on('skill:select', ({ slotKey, skillId } = {}) => {
+    const zone = zones.getZone(socket.id);
+    if (!zone) return;
+    const p = zone.world.getPlayer(socket.id);
+    if (!p || p.dead) return;
+    if (p.casting) { socket.emit('skill:select_result', { error: 'in_combat' }); return; }
+    const result = zone.players.selectSkill(p, slotKey, skillId);
+    socket.emit('skill:select_result', { slotKey, skillId, abilities: zone.combat.getPlayerAbilities(p), ...result });
   });
 
   // ── ping_rtt ─────────────────────────────────────────────────────────────────
