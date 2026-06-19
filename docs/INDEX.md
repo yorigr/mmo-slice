@@ -41,8 +41,9 @@ MMORPG/
 ### Config (balanceamento — edite aqui, não no código)
 | Arquivo | O que contém |
 |---------|-------------|
-| `src/config/constants.js` | **Fonte única de verdade.** Tick rate, HP, velocidade, XP, crit, classes. |
-| `src/config/skills.json` | 25 skills (5 por classe). Tipo, cast time, cooldown, mana, dano, efeitos. |
+| `src/config/constants.js` | **Fonte única de verdade.** Tick rate, HP, velocidade, XP, crit, economia, CC DR. |
+| `src/config/skills.json` | Catálogo FLAT de skills (sem keying por classe). Indexado por skill_id. |
+| `src/config/gear.json` | Famílias de armas e tipos de armadura. Define skill slots e opções por peça. |
 | `src/config/items.json` | Catálogo de itens. Stats de equipamento, consumíveis, materiais. |
 
 ---
@@ -73,9 +74,11 @@ MMORPG/
 ### Cliente → Servidor
 | Evento | Payload | Descrição |
 |--------|---------|-----------|
-| `player:join` | `{ name, playerClass, sessionToken?, zoneId? }` | Entra no jogo |
+| `player:join` | `{ name, sessionToken?, zoneId? }` | Entra no jogo (sem classe — gear-based) |
 | `player:move` | `{ x, y }` | Posição |
-| `skill:use` | `{ skillId, tx, ty }` | Usa habilidade |
+| `skill:use` | `{ skillId, tx, ty }` | Usa habilidade (skillId = id da skill, ex: `skill_slash`) |
+| `gear:equip` | `{ slot, gearId }` | Equipa peça de gear (slot: weapon/chest/head/boots) |
+| `skill:select` | `{ slotKey, skillId }` | Muda skill de um slot (ex: slotKey=`weapon_Q`) |
 | `item:pickup` | `{ itemId }` | Pega item do chão |
 | `chat:send` | `{ channel, message }` | Mensagem (global ou zone) |
 | `zone:change` | `{ zoneId }` | Troca de zona |
@@ -91,8 +94,11 @@ MMORPG/
 | `combat:interrupts` | Casts interrompidos por tick |
 | `player:levelup` | `{level, maxHp, maxMana, speed, xp, xpMax}` |
 | `player:xp` | `{xp, gold, totalXp, totalGold, xpMax}` |
-| `player:revived` | `{hp}` — ressuscitado por outro jogador |
+| `player:revived` | `{hp, x, y}` — ressuscitado (auto ou por aliado) |
 | `skill:result` | `{skillId, resolved?} | {skillId, rejected:'reason'}` |
+| `status:applied` | `{type, endsAt}` — status effect aplicado no player local |
+| `gear:equipped` | `{slot, gearId, abilities, ok?}` — confirmação de equipamento |
+| `skill:select_result` | `{slotKey, skillId, abilities, ok?}` — confirmação de seleção |
 | `item:picked` | Item coletado com sucesso `{item:{id,type,...}}` |
 | `chat:message` | `{channel, from, message, ts}` |
 | `pong_rtt` | Resposta de latência (timestamp espelhado) |
@@ -138,10 +144,12 @@ CombatEngine → monster.hp <= 0
 
 | Arquivo | Conteúdo |
 |---------|----------|
-| `MMORPG_GDD.md` | Game Design Document (classes, mecânicas, mundo) |
+| `MMORPG_GDD.md` | Game Design Document (mecânicas, mundo) |
 | `SERVER_ARCHITECTURE.md` | Arquitetura técnica |
-| `SKILL_DEFINITIONS.md` | Design das 25 skills |
+| `SKILL_DEFINITIONS.md` | Design das skills por gear type |
 | `DEVELOPMENT_ROADMAP.md` | Fases e timeline |
 | `GAME_CONFIG.md` | Guia de balanceamento |
 | `SCENE_SETUP.md` | Setup de cena Unity |
 | `PHASE2_UNITY.md` | Plano do cliente Unity |
+| `COMBAT_AND_PROGRESSION_REFERENCE.md` | Estudo de Albion (CC, GvG, Status Effects) |
+| `ECONOMY_AND_GEAR_REFERENCE.md` | Gear-based sandbox + anti-inflação (pesquisa EVE/Albion) |
