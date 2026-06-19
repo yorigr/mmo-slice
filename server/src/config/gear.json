@@ -1,0 +1,200 @@
+{
+  "_comment": "Famílias de armas e tipos de armadura. Cada peça define seus skill slots.",
+
+  "weapons": {
+
+    "sword": {
+      "name": "Espada",
+      "description": "Melee equilibrado. CC e burst de finisher.",
+      "range": 65,
+      "slots": {
+        "Q": { "options": ["skill_slash", "skill_rend"] },
+        "W": { "options": ["skill_shield_bash", "skill_heavy_blow"] },
+        "E": { "options": ["skill_execute"] }
+      }
+    },
+
+    "greataxe": {
+      "name": "Machado Grande",
+      "description": "Melee de alto dano. Especializado em bleed e AoE.",
+      "range": 70,
+      "slots": {
+        "Q": { "options": ["skill_cleave", "skill_rend"] },
+        "W": { "options": ["skill_whirlwind", "skill_decimate"] },
+        "E": { "options": ["skill_ground_slam"] }
+      }
+    },
+
+    "daggers": {
+      "name": "Adagas",
+      "description": "Dual wield veloz. Bleed, debuffs e mobilidade.",
+      "range": 50,
+      "slots": {
+        "Q": { "options": ["skill_stab", "skill_lacerate"] },
+        "W": { "options": ["skill_shadow_dash", "skill_evasion"] },
+        "E": { "options": ["skill_expose"] }
+      }
+    },
+
+    "mace": {
+      "name": "Maça",
+      "description": "Melee de suporte. DefenseDown e fortify.",
+      "range": 65,
+      "slots": {
+        "Q": { "options": ["skill_pummel", "skill_shatter"] },
+        "W": { "options": ["skill_body_slam", "skill_fortify"] },
+        "E": { "options": ["skill_sunder_armor"] }
+      }
+    },
+
+    "hammer": {
+      "name": "Martelo",
+      "description": "Melee AoE. Knockback, knockup e slow em área.",
+      "range": 70,
+      "slots": {
+        "Q": { "options": ["skill_smash", "skill_earth_shatter"] },
+        "W": { "options": ["skill_tremor", "skill_thunderclap"] },
+        "E": { "options": ["skill_seismic_stomp"] }
+      }
+    },
+
+    "bow": {
+      "name": "Arco",
+      "description": "Ranged de kiting. Slow, antiHeal e root.",
+      "range": 400,
+      "slots": {
+        "Q": { "options": ["skill_quick_shot", "skill_barbed_arrow"] },
+        "W": { "options": ["skill_aimed_shot", "skill_multi_shot"] },
+        "E": { "options": ["skill_bear_trap"] }
+      }
+    },
+
+    "fire_staff": {
+      "name": "Cajado de Fogo",
+      "description": "Magia AoE de burst. Burn DoT e canal devastador.",
+      "range": 350,
+      "slots": {
+        "Q": { "options": ["skill_fire_bolt", "skill_arcane_pulse"] },
+        "W": { "options": ["skill_fireball", "skill_fire_wall"] },
+        "E": { "options": ["skill_mana_surge"] }
+      }
+    },
+
+    "frost_staff": {
+      "name": "Cajado de Gelo",
+      "description": "Magia de CC pesado. Root e slow.",
+      "range": 320,
+      "slots": {
+        "Q": { "options": ["skill_frost_bolt", "skill_ice_shard"] },
+        "W": { "options": ["skill_blizzard", "skill_frost_nova"] },
+        "E": { "options": ["skill_ice_armor"] }
+      }
+    },
+
+    "arcane_staff": {
+      "name": "Cajado Arcano",
+      "description": "Magia de suporte e debuff. Cleanse, purge, pull.",
+      "range": 300,
+      "slots": {
+        "Q": { "options": ["skill_arcane_bolt", "skill_mana_burn"] },
+        "W": { "options": ["skill_life_drain", "skill_arcane_pull"] },
+        "E": { "options": ["skill_purge"] }
+      }
+    },
+
+    "holy_staff": {
+      "name": "Cajado Sagrado",
+      "description": "Cura e suporte. Heal, revive, ccImmune.",
+      "range": 300,
+      "slots": {
+        "Q": { "options": ["skill_holy_bolt", "skill_smite"] },
+        "W": { "options": ["skill_heal", "skill_group_heal"] },
+        "E": { "options": ["skill_resurrection"] }
+      }
+    }
+  },
+
+  "armors": {
+
+    "cloth_hood": {
+      "name": "Capuz de Pano",
+      "slot": "head",
+      "armorType": "cloth",
+      "tier": 1,
+      "stats": { "maxMana": 20, "damageReduction": 0.0 },
+      "skill": { "options": ["skill_arcane_shield", "skill_mana_amp"] }
+    },
+
+    "leather_cap": {
+      "name": "Chapéu de Couro",
+      "slot": "head",
+      "armorType": "leather",
+      "tier": 1,
+      "stats": { "maxHp": 10, "damageReduction": 0.03 },
+      "skill": { "options": ["skill_cc_immune", "skill_dodge_passive"] }
+    },
+
+    "plate_helm": {
+      "name": "Elmo de Placa",
+      "slot": "head",
+      "armorType": "plate",
+      "tier": 1,
+      "stats": { "maxHp": 20, "damageReduction": 0.08 },
+      "skill": { "options": ["skill_iron_will", "skill_taunting_cry"] }
+    },
+
+    "cloth_chest": {
+      "name": "Vestes de Pano",
+      "slot": "chest",
+      "armorType": "cloth",
+      "tier": 1,
+      "stats": { "maxMana": 30, "damageReduction": 0.0 },
+      "skill": { "options": ["skill_damage_amp", "skill_mana_recovery"] }
+    },
+
+    "leather_chest": {
+      "name": "Armadura de Couro",
+      "slot": "chest",
+      "armorType": "leather",
+      "tier": 1,
+      "stats": { "maxHp": 15, "damageReduction": 0.05 },
+      "skill": { "options": ["skill_evasion", "skill_relentless"] }
+    },
+
+    "plate_chest": {
+      "name": "Peitoral de Placa",
+      "slot": "chest",
+      "armorType": "plate",
+      "tier": 1,
+      "stats": { "maxHp": 30, "damageReduction": 0.12 },
+      "skill": { "options": ["skill_tough_skin", "skill_fortified"] }
+    },
+
+    "cloth_boots": {
+      "name": "Sandálias de Pano",
+      "slot": "boots",
+      "armorType": "cloth",
+      "tier": 1,
+      "stats": { "speed": 5 },
+      "skill": { "options": ["skill_blink", "skill_self_cleanse"] }
+    },
+
+    "leather_boots": {
+      "name": "Botas de Couro",
+      "slot": "boots",
+      "armorType": "leather",
+      "tier": 1,
+      "stats": { "speed": 10 },
+      "skill": { "options": ["skill_sprint", "skill_rolling_dodge"] }
+    },
+
+    "plate_boots": {
+      "name": "Sapatões de Placa",
+      "slot": "boots",
+      "armorType": "plate",
+      "tier": 1,
+      "stats": { "maxHp": 10, "speed": -5 },
+      "skill": { "options": ["skill_charge", "skill_heavy_step"] }
+    }
+  }
+}
