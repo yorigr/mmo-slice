@@ -242,11 +242,20 @@ namespace MMORPG
             var data = JsonUtility.FromJson<PlayerXpData>(json);
             if (data == null) return;
 
-            Debug.Log($"[GameManager] +{data.xp} XP, +{data.gold} gold  (total: {data.totalXp} XP / {data.totalGold} gold)");
+            Debug.Log($"[GameManager] +{data.xp} XP, +{data.gold} gold");
 
-            // HUD será atualizado no próximo world:update (20Hz), mas antecipamos aqui
             hud?.SetXP(data.totalXp, data.xpMax);
             hud?.SetGold(data.totalGold);
+
+            // Mostra XP e gold ganhos acima do jogador local
+            if (_localPlayerGO != null)
+            {
+                Vector3 pos = _localPlayerGO.transform.position;
+                if (data.xp > 0)
+                    FloatingText.Spawn(pos + Vector3.up * 0.3f, $"+{data.xp} XP", Color.cyan);
+                if (data.gold > 0)
+                    FloatingText.Spawn(pos + Vector3.up * 0.6f, $"+{data.gold} G", new Color(1f, 0.85f, 0f));
+            }
         }
 
         private void HandlePlayerLevelUp(string json)
@@ -302,8 +311,12 @@ namespace MMORPG
             if (_localPlayerCtrl == null)
                 Debug.LogError("[GameManager] PlayerController não encontrado no playerPrefab!");
 
-            // Constrói o visual stick man para o jogador local (cor cinza clara = local)
+            // Constrói o visual stick man para o jogador local
             StickManBuilder.Build(_localPlayerGO, StickManBuilder.ClassColor(playerClass));
+
+            // Nome tag acima da cabeça (branco = jogador local)
+            string spawnNameForTag = !string.IsNullOrEmpty(stateData?.name) ? stateData.name : playerName;
+            PlayerNameTag.Attach(_localPlayerGO, spawnNameForTag, Color.white);
 
             // Informa o ItemWorldController sobre o jogador local (para distância de pickup)
             itemController?.SetLocalPlayer(_localPlayerGO.transform);
@@ -357,6 +370,9 @@ namespace MMORPG
             // Constrói stick man com a cor da classe do remoto
             StickManBuilder.Build(go, StickManBuilder.ClassColor(playerData.className));
 
+            // Nome tag na cor da classe (distingue remotos por classe)
+            PlayerNameTag.Attach(go, playerData.name, StickManBuilder.ClassColor(playerData.className));
+
             _remotePlayerObjects[playerId] = go;
             Debug.Log($"[GameManager] Jogador remoto spawnado: {playerData.name} ({playerId})");
         }
@@ -386,20 +402,4 @@ namespace MMORPG
                 // Alvo XZ vem do servidor; Y vem do terreno na posição alvo
                 Vector3 targetPos = GroundSampler.Snap(new Vector3(data.x, 0f, data.z));
 
-                // Lerp suave entre atualizações do servidor (20Hz → 60+fps visual).
-                // Y é interpolado junto — cobre suavemente rampas e degraus do terreno.
-                kvp.Value.transform.position = Vector3.Lerp(
-                    kvp.Value.transform.position,
-                    targetPos,
-                    Time.deltaTime * 10f // 10 = fator de suavização; ajuste ao gosto
-                );
-            }
-        }
-
-        private void HandleSkillResult(string json)
-        {
-            // Payload: { skillId, resolved?:true } | { skillId, rejected:'reason' } | { skillId, casting?:true }
-            var data = JsonUtility.FromJson<SkillResultData>(json);
-            if (data == null || string.IsNullOrEmpty(data.skillId)) return;
-
-   
+                // Lerp suave entre atualizaç
