@@ -25,9 +25,17 @@ const MAX_MONSTERS_PER_ZONE = 30;
 // Uma zona é um mundo isolado: managers próprios, game loop próprio, Socket.IO room própria.
 
 class Zone {
-  constructor(io, zoneId) {
+  /**
+   * @param {object} io      - Socket.IO server instance
+   * @param {string} zoneId  - ID único da zona
+   * @param {object} options
+   * @param {string} options.zoneType - 'safe' | 'yellow' | 'red' | 'black' (padrão: 'yellow')
+   *   Define regras de morte: taxa de destruição de gear e se full loot está ativado.
+   */
+  constructor(io, zoneId, options = {}) {
     this.id      = zoneId;
-    this.world   = new WorldManager(io, zoneId);
+    this.type    = options.zoneType || 'yellow';
+    this.world   = new WorldManager(io, zoneId, this.type);
     this.players = new PlayerManager(this.world);
     this.combat  = new CombatEngine(this.world, this.players);
     this.monsters = new MonsterManager(this.world, this.combat);
@@ -87,10 +95,14 @@ class ZoneManager {
     this._socketZone = new Map(); // socketId → zoneId
   }
 
-  /** Retorna a zona (criando e iniciando se necessário). */
-  getOrCreate(zoneId) {
+  /**
+   * Retorna a zona (criando e iniciando se necessário).
+   * @param {string} zoneId
+   * @param {object} options - Passado ao construtor de Zone (ex: { zoneType: 'red' })
+   */
+  getOrCreate(zoneId, options = {}) {
     if (!this.zones.has(zoneId)) {
-      const zone = new Zone(this.io, zoneId);
+      const zone = new Zone(this.io, zoneId, options);
       this.zones.set(zoneId, zone);
       zone.start();
     }
