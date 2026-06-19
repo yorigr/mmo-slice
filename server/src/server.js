@@ -93,7 +93,8 @@ io.on('connection', (socket) => {
       id:           socket.id,
       sessionToken: newToken,
       world:        { w: MAP_W, h: MAP_H },
-      abilities:    zone.combat.getSkillCatalog(),
+      // Array com apenas as skills da classe do jogador (5 skills) para o SkillBar do cliente
+      abilities:    zone.combat.getClassSkills(state.class),
       state,
     });
 
@@ -189,7 +190,7 @@ io.on('connection', (socket) => {
       id:           socket.id,
       sessionToken: newToken,
       world:        { w: MAP_W, h: MAP_H },
-      abilities:    newZone.combat.getSkillCatalog(),
+      abilities:    newZone.combat.getClassSkills(state.class),
       state,
     });
 
