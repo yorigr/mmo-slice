@@ -48,6 +48,8 @@ namespace MMORPG
         [SerializeField] private HUD                   hud;
         [SerializeField] private SkillBar              skillBar;          // Opcional: auto-cria se nulo
         [SerializeField] private ItemWorldController   itemController;    // Opcional: auto-cria se nulo
+        [SerializeField] private RespawnPanel          respawnPanel;      // Opcional: auto-cria se nulo
+        [SerializeField] private ChatUI                chatUI;            // Opcional: auto-cria se nulo
 
         // ─── Estado interno ───────────────────────────────────────────────────────
         private NetworkManager _net;
@@ -112,12 +114,23 @@ namespace MMORPG
                 _world.OnPlayerLeft   += DespawnRemotePlayer;
             }
 
-            // Cria SkillBar e ItemWorldController se não atribuídos no Inspector
+            // Cria componentes de UI se não atribuídos no Inspector
             if (skillBar == null)
                 skillBar = gameObject.AddComponent<SkillBar>();
 
             if (itemController == null)
                 itemController = gameObject.AddComponent<ItemWorldController>();
+
+            if (respawnPanel == null)
+                respawnPanel = gameObject.AddComponent<RespawnPanel>();
+
+            if (chatUI == null)
+                chatUI = gameObject.AddComponent<ChatUI>();
+
+            // ChatUI precisa registrar o evento chat:message assim que NetworkManager conectar.
+            // Registramos aqui (antes de Connect()) porque o NetworkManager pode já estar pronto.
+            if (chatUI != null && _net != null)
+                chatUI.Register(_net);
 
             // Inicia conexão
             _net.Connect();
@@ -233,7 +246,9 @@ namespace MMORPG
 
             Debug.Log($"[GameManager] Jogador morreu: {idPayload.id}");
 
-            // TODO Phase 3: Tocar animação de morte no remote player / tela de respawn no local
+            // Mostra tela de respawn apenas para o jogador local
+            if (idPayload.id == _world?.LocalPlayerId)
+                respawnPanel?.Show();
         }
 
         private void HandlePlayerXp(string json)
@@ -278,7 +293,8 @@ namespace MMORPG
         {
             var data = JsonUtility.FromJson<PlayerRevivedData>(json);
             Debug.Log($"[GameManager] Ressuscitado! HP: {(data != null ? data.hp : 0)}");
-            // O world:update vai refletir o novo estado automaticamente
+            // Esconde a tela de respawn — world:update vai refletir o novo HP automaticamente
+            respawnPanel?.Hide();
         }
 
         // ─── Spawning ─────────────────────────────────────────────────────────────
@@ -387,19 +403,4 @@ namespace MMORPG
             Debug.Log($"[GameManager] Jogador remoto removido: {playerId}");
         }
 
-        // ─── Sincronização de remotos ─────────────────────────────────────────────
-        private void SyncRemotePlayers()
-        {
-            if (_world == null) return;
-
-            // Move cada remote player em direção à posição do WorldState.
-            // WorldState é atualizado 20Hz; entre updates, fazemos lerp para suavizar.
-            foreach (var kvp in _remotePlayerObjects)
-            {
-                if (kvp.Value == null) continue;
-                if (!_world.Players.TryGetValue(kvp.Key, out var data)) continue;
-
-                // Alvo XZ vem do servidor; Y vem do terreno na posição alvo
-                Vector3 targetPos = GroundSampler.Snap(new Vector3(data.x, 0f, data.z));
-
-                // Lerp suave entre atualizaç
+        // ─── Sincronização de remotos ──�
