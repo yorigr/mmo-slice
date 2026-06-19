@@ -6,9 +6,16 @@ const { TICK_RATE } = require('../config/constants');
 function xpMax(level) { return Math.floor(100 * Math.pow(level || 1, 1.5)); }
 
 class WorldManager {
-  constructor(io, zoneId = 'overworld') {
-    this.io      = io;
-    this.zoneId  = zoneId;
+  /**
+   * @param {object} io       - Socket.IO server instance
+   * @param {string} zoneId   - ID da zona (ex: 'overworld', 'dungeon_1')
+   * @param {string} zoneType - Tipo de zona: 'safe' | 'yellow' | 'red' | 'black'
+   *   Controla regras de morte: taxa de destruição e se loot por outros é permitido.
+   */
+  constructor(io, zoneId = 'overworld', zoneType = 'yellow') {
+    this.io       = io;
+    this.zoneId   = zoneId;
+    this.zoneType = zoneType;   // usado por PlayerManager.handlePlayerDeath
     this.players  = new Map();
     this.monsters = new Map();
     this.items    = new Map();
