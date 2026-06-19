@@ -50,13 +50,6 @@ namespace MMORPG
         private NetworkManager _net;
         private WorldState     _world;
 
-        /// <summary>
-        /// Token de reconexão emitido pelo servidor em player:joined.
-        /// Armazenado em memória (e em PlayerPrefs) para ser reenviado no próximo
-        /// player:join — permite retomar posição/XP/gold após desconexões curtas.
-        /// </summary>
-        private string _sessionToken;
-
         // Instância do GameObject do jogador local
         private GameObject _localPlayerGO;
         private PlayerController _localPlayerCtrl;
@@ -95,11 +88,14 @@ namespace MMORPG
             _net.OnDisconnected += HandleDisconnected;
 
             // Registra eventos do servidor
-            _net.OnEvent["player:joined"] = HandlePlayerJoined;
-            _net.OnEvent["player:left"]   = HandlePlayerLeft;
-            _net.OnEvent["world:update"]  = HandleWorldUpdate;
-            _net.OnEvent["pong_rtt"]      = HandlePong;
-            _net.OnEvent["player:died"]   = HandlePlayerDied;
+            _net.OnEvent["player:joined"]  = HandlePlayerJoined;
+            _net.OnEvent["player:left"]    = HandlePlayerLeft;
+            _net.OnEvent["world:update"]   = HandleWorldUpdate;
+            _net.OnEvent["pong_rtt"]       = HandlePong;       // corrigido: era "pong"
+            _net.OnEvent["player:died"]    = HandlePlayerDied;
+            _net.OnEvent["player:xp"]      = HandlePlayerXp;
+            _net.OnEvent["player:levelup"] = HandlePlayerLevelUp;
+            _net.OnEvent["player:revived"] = HandlePlayerRevived;
 
             // Registra callbacks do WorldState para spawning de remotos
             if (_world != null)
@@ -149,17 +145,8 @@ namespace MMORPG
         {
             Debug.Log("[GameManager] Conectado ao servidor. Enviando player:join...");
 
-            // Carrega token salvo (PlayerPrefs persiste entre sessões do Unity)
-            if (string.IsNullOrEmpty(_sessionToken))
-                _sessionToken = PlayerPrefs.GetString("mmo_session_token", "");
-
-            // Inclui token se disponível — servidor restaura estado em até 30s
-            string tokenPart = string.IsNullOrEmpty(_sessionToken)
-                ? ""
-                : $",\"sessionToken\":\"{_sessionToken}\"";
-
-            // "playerClass" (não "class" — palavra reservada no protocolo v1 / C#)
-            string json = $"{{\"name\":\"{playerName}\",\"playerClass\":\"{playerClass}\"{tokenPart}}}";
+            // Servidor lê "playerClass" (não "class" — palavra reservada no protocolo v1)
+            string json = $"{{\"name\":\"{playerName}\",\"playerClass\":\"{playerClass}\"}}";
             _net.Emit("player:join", json);
         }
 
@@ -180,28 +167,19 @@ namespace MMORPG
         // ─── Handlers de eventos do servidor ─────────────────────────────────────
         private void HandlePlayerJoined(string json)
         {
-            // Extrai o ID ANTES de notificar o WorldState para evitar race condition:
-            // Se LocalPlayerId ainda não está definido (= somos nós), precisamos definir ANTES
-            // de chamar HandlePlayerJoined, caso contrário OnPlayerJoined dispara SpawnRemotePlayer
-            // e spawna nosso próprio personagem como remoto.
+            // Payload: {"id":"abc123","name":"Yuri","x":1200,"y":900,"hp":100,"maxHp":100,"class":"warrior"}
+            _world?.HandlePlayerJoined(json);
+
+            // Tenta extrair o ID para verificar se é o jogador local
             var idPayload = JsonUtility.FromJson<IdExtract>(json);
             if (idPayload == null || string.IsNullOrEmpty(idPayload.id)) return;
 
-            bool isLocalPlayer = string.IsNullOrEmpty(_world?.LocalPlayerId);
-
-            if (isLocalPlayer && _world != null)
+            // Se ainda não temos um ID local (primeira vez que recebemos player:joined para nós)
+            // O servidor envia player:joined para o próprio jogador com SEU id
+            if (string.IsNullOrEmpty(_world?.LocalPlayerId))
             {
-                // Define LocalPlayerId ANTES de notificar o WorldState, assim SpawnRemotePlayer
-                // vai pular corretamente o nosso próprio ID quando OnPlayerJoined disparar.
-                _world.LocalPlayerId = idPayload.id;
-            }
-
-            // Notifica o WorldState (dispara OnPlayerJoined → SpawnRemotePlayer para outros)
-            _world?.HandlePlayerJoined(json);
-
-            // Spawna o jogador local se for o nosso join
-            if (isLocalPlayer)
-            {
+                // Heurística: se não há jogador local spawned, este é o nosso join
+                // Uma implementação mais robusta usaria um campo "isLocal" ou o socket ID
                 AssignLocalPlayer(idPayload.id, json);
             }
         }
@@ -215,16 +193,19 @@ namespace MMORPG
         {
             _world?.UpdateFromServer(json);
 
-            // Reconcilia posição do jogador local com o servidor
+            // Reconcilia posição e atualiza HUD com dados autoritativos do servidor
             if (_localPlayerCtrl != null && _world != null && _world.TryGetLocalPlayer(out var localData))
             {
-                // Converte de volta para pixels (PlayerController espera coordenadas do servidor)
                 float serverX = localData.x * 50f;
                 float serverY = localData.z * 50f;
                 _localPlayerCtrl.ApplyServerPosition(serverX, serverY);
 
-                // Atualiza HUD com HP do servidor (autoritativo)
+                // HUD atualizado com todos os campos de progressão
                 hud?.SetHP(localData.hp, localData.maxHp);
+                hud?.SetMana(localData.mana, localData.maxMana);
+                hud?.SetXP(localData.xp, localData.xpMax);
+                hud?.SetGold(localData.gold);
+                hud?.SetLevel(localData.level > 0 ? localData.level : 1);
             }
         }
 
@@ -244,6 +225,42 @@ namespace MMORPG
             // TODO Phase 3: Tocar animação de morte no remote player / tela de respawn no local
         }
 
+        private void HandlePlayerXp(string json)
+        {
+            // Payload: { xp, gold, totalXp, totalGold, xpMax }
+            var data = JsonUtility.FromJson<PlayerXpData>(json);
+            if (data == null) return;
+
+            Debug.Log($"[GameManager] +{data.xp} XP, +{data.gold} gold  (total: {data.totalXp} XP / {data.totalGold} gold)");
+
+            // HUD será atualizado no próximo world:update (20Hz), mas antecipamos aqui
+            hud?.SetXP(data.totalXp, data.xpMax);
+            hud?.SetGold(data.totalGold);
+        }
+
+        private void HandlePlayerLevelUp(string json)
+        {
+            // Payload: { level, maxHp, maxMana, speed, xp, xpMax }
+            var data = JsonUtility.FromJson<PlayerLevelUpData>(json);
+            if (data == null) return;
+
+            Debug.Log($"[GameManager] LEVEL UP! Agora Lv{data.level} (HP:{data.maxHp}, Mana:{data.maxMana})");
+
+            hud?.SetLevel(data.level);
+            hud?.SetHP(data.maxHp, data.maxHp);   // full heal no level up
+            hud?.SetMana(data.maxMana, data.maxMana);
+            hud?.SetXP(data.xp, data.xpMax);
+
+            // TODO Phase 3: Tocar efeito visual/sonoro de level up
+        }
+
+        private void HandlePlayerRevived(string json)
+        {
+            var data = JsonUtility.FromJson<PlayerRevivedData>(json);
+            Debug.Log($"[GameManager] Ressuscitado! HP: {(data != null ? data.hp : 0)}");
+            // O world:update vai refletir o novo estado automaticamente
+        }
+
         // ─── Spawning ─────────────────────────────────────────────────────────────
         private void AssignLocalPlayer(string playerId, string joinJson)
         {
@@ -254,17 +271,10 @@ namespace MMORPG
             }
 
             // Extrai posição inicial do payload de join.
-            // O servidor envia {id, sessionToken, world, abilities, state:{x,y,...}}.
+            // O servidor envia {id, world, abilities, state:{x,y,...}} — os dados de posição
+            // estão dentro de "state", não no nível raiz.
             var data = JsonUtility.FromJson<PlayerJoinData>(joinJson);
             var stateData = data?.state;
-
-            // Salva token de reconexão (v2) — usado no próximo player:join após desconexão
-            if (!string.IsNullOrEmpty(data?.sessionToken))
-            {
-                _sessionToken = data.sessionToken;
-                PlayerPrefs.SetString("mmo_session_token", _sessionToken);
-                PlayerPrefs.Save();
-            }
 
             // ServerToUnity usa GroundSampler internamente — Y = altura do terreno
             Vector3 startPos = stateData != null
@@ -273,14 +283,6 @@ namespace MMORPG
 
             // Usa o nome do servidor se disponível; fallback para o nome configurado no Inspector
             string spawnName = !string.IsNullOrEmpty(stateData?.name) ? stateData.name : playerName;
-
-            // Destrói instância anterior (pode existir após reconexão)
-            if (_localPlayerGO != null)
-            {
-                Destroy(_localPlayerGO);
-                _localPlayerGO   = null;
-                _localPlayerCtrl = null;
-            }
 
             // Spawna o jogador local
             _localPlayerGO   = Instantiate(playerPrefab, startPos, Quaternion.identity);
@@ -296,9 +298,13 @@ namespace MMORPG
             if (_world != null)
                 _world.LocalPlayerId = playerId;
 
-            // Atualiza HUD com nome (preferência para o nome confirmado pelo servidor)
+            // Inicializa HUD com dados reais do servidor
             hud?.SetPlayerName(spawnName);
-            hud?.SetLevel(1); // Level será dinâmico na Phase 3
+            hud?.SetLevel(stateData?.level > 0 ? stateData.level : 1);
+            hud?.SetHP(stateData?.hp ?? stateData?.maxHp ?? 100, stateData?.maxHp ?? 100);
+            hud?.SetMana(stateData?.mana ?? stateData?.maxMana ?? 100, stateData?.maxMana ?? 100);
+            hud?.SetXP(stateData?.xp ?? 0, stateData?.xpMax > 0 ? stateData.xpMax : 100);
+            hud?.SetGold(stateData?.gold ?? 0);
 
             _gameStarted = true;
             Debug.Log($"[GameManager] Jogador local spawnado. ID: {playerId} em {startPos}");
@@ -373,7 +379,6 @@ namespace MMORPG
         private class PlayerJoinData
         {
             public string id;
-            public string sessionToken; // v2: token de reconexão emitido pelo servidor
             public PlayerJoinState state;
         }
 
@@ -385,7 +390,42 @@ namespace MMORPG
             public string name;
             public int    hp;
             public int    maxHp;
+            public int    mana;
+            public int    maxMana;
+            public int    stamina;
+            public int    maxStamina;
             public string playerClass;
+            public int    level;
+            public int    xp;
+            public int    xpMax;
+            public int    gold;
+        }
+
+        [System.Serializable]
+        private class PlayerXpData
+        {
+            public int xp;
+            public int gold;
+            public int totalXp;
+            public int totalGold;
+            public int xpMax;
+        }
+
+        [System.Serializable]
+        private class PlayerLevelUpData
+        {
+            public int level;
+            public int maxHp;
+            public int maxMana;
+            public int speed;
+            public int xp;
+            public int xpMax;
+        }
+
+        [System.Serializable]
+        private class PlayerRevivedData
+        {
+            public int hp;
         }
     }
 }
