@@ -59,7 +59,7 @@ class WorldManager {
         xpMax:  xpMax(p.level),
         gold:   p.gold,
         casting: p.casting ? {
-          abilityId: p.casting.abilityId,
+          skillId: p.casting.skillId,
           remaining: Math.max(0, p.casting.endsAt - now),
           total: p.casting.total,
         } : null,
