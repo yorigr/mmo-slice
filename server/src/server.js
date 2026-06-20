@@ -19,7 +19,8 @@ const cors            = require('cors');
 const path            = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-const { PORT, MAP_W, MAP_H, BLACKSMITH_X, BLACKSMITH_Y, BLACKSMITH_RANGE, TRAINER_X, TRAINER_Y, TRAINER_RANGE } = require('./config/constants');
+const { PORT, MAP_W, MAP_H, BLACKSMITH_X, BLACKSMITH_Y, BLACKSMITH_RANGE, TRAINER_X, TRAINER_Y, TRAINER_RANGE, MAX_INVENTORY_SLOTS, LOOT_DESPAWN_MS } = require('./config/constants');
+const ITEMS = require('./config/items.json');
 const { ZoneManager }        = require('./managers/ZoneManager');
 const SessionManager         = require('./managers/SessionManager');
 
@@ -231,37 +232,105 @@ io.on('connection', (socket) => {
 
   // ── gear:unequip ─────────────────────────────────────────────────────────────
   // Payload: { slot: 'weapon'|'chest'|'head'|'boots' }
-  // Remove a peça de gear do slot e reseta a(s) skill(s) associada(s).
+  // Remove a peça do slot, reseta skills e devolve o gearId ao inventário.
   socket.on('gear:unequip', ({ slot } = {}) => {
     const zone = zones.getZone(socket.id);
     if (!zone) return;
     const p = zone.world.getPlayer(socket.id);
     if (!p || p.dead) return;
+
+    const validSlots = ['weapon', 'chest', 'head', 'boots'];
+    if (!validSlots.includes(slot)) {
+      socket.emit('gear:unequipped', { error: 'invalid_slot' }); return;
+    }
+    const gearId = p.equipment[slot];
+    if (!gearId) {
+      socket.emit('gear:unequipped', { error: 'slot_empty' }); return;
+    }
+    if (p.inventory.length >= MAX_INVENTORY_SLOTS) {
+      socket.emit('gear:unequipped', { error: 'inventory_full' }); return;
+    }
+
+    // Remove do slot e adiciona ao inventário antes de recalcular stats
     const result = zone.players.unequipItem(p, slot);
-    socket.emit('gear:unequipped', { slot, abilities: zone.combat.getPlayerAbilities(p), ...result });
+    if (result.ok) {
+      p.inventory.push({ id: uuidv4(), type: gearId });
+    }
+    socket.emit('gear:unequipped', {
+      slot, gearId,
+      abilities: zone.combat.getPlayerAbilities(p),
+      inventory: p.inventory,
+      ...result,
+    });
   });
 
   // ── item:drop ────────────────────────────────────────────────────────────────
-  // Payload: { itemId } — remove o item do inventário (descartado no mundo / perdido).
+  // Payload: { itemId } — remove do inventário e spawna o item no chão da zona.
+  // Outros jogadores verão o item via world:update (items são incluídos no snapshot).
   socket.on('item:drop', ({ itemId } = {}) => {
     const zone = zones.getZone(socket.id);
     if (!zone) return;
     const p = zone.world.getPlayer(socket.id);
     if (!p) return;
-    const before = p.inventory.length;
+
+    const dropped = p.inventory.find(i => i.id === itemId);
+    if (!dropped) { socket.emit('inventory:updated', { inventory: p.inventory, error: 'not_found' }); return; }
+
+    // Remove do inventário
     p.inventory = p.inventory.filter(i => i.id !== itemId);
-    socket.emit('inventory:updated', { inventory: p.inventory, removed: before !== p.inventory.length });
+
+    // Spawna no chão próximo ao player (jitter ±20px para não sobrepor)
+    const worldItem = {
+      id:   uuidv4(),
+      type: dropped.type,
+      x:    p.x + (Math.random() - 0.5) * 40,
+      y:    p.y + (Math.random() - 0.5) * 40,
+    };
+    zone.world.addItem(worldItem);
+    // Despawna automaticamente após LOOT_DESPAWN_MS (igual ao loot de monstro)
+    setTimeout(() => zone.world.removeItem(worldItem.id), LOOT_DESPAWN_MS);
+
+    socket.emit('inventory:updated', { inventory: p.inventory });
   });
 
   // ── item:use ─────────────────────────────────────────────────────────────────
-  // Payload: { itemId } — usa um consumível. Por ora apenas remove do inventário
-  // (efeito de poção será implementado quando consumíveis forem definidos).
+  // Payload: { itemId } — consome o item e aplica seu efeito (hp/mana de items.json).
+  // Itens não-consumíveis retornam erro. Stackable com qty>1 decrementa em vez de remover.
   socket.on('item:use', ({ itemId } = {}) => {
     const zone = zones.getZone(socket.id);
     if (!zone) return;
     const p = zone.world.getPlayer(socket.id);
-    if (!p) return;
-    p.inventory = p.inventory.filter(i => i.id !== itemId);
+    if (!p || p.dead) return;
+
+    const slot = p.inventory.find(i => i.id === itemId);
+    if (!slot) { socket.emit('item:use_result', { error: 'not_found' }); return; }
+
+    const def = ITEMS[slot.type];
+    if (!def || def.type !== 'consumable' || !def.effect) {
+      socket.emit('item:use_result', { error: 'not_consumable' }); return;
+    }
+
+    // Aplica efeito (HP e/ou mana, clampado ao máximo)
+    const effect = {};
+    if (def.effect.hp) {
+      const before = p.hp;
+      p.hp = Math.min(p.maxHp, p.hp + def.effect.hp);
+      effect.hp = p.hp - before;
+    }
+    if (def.effect.mana) {
+      const before = p.mana;
+      p.mana = Math.min(p.maxMana, p.mana + def.effect.mana);
+      effect.mana = p.mana - before;
+    }
+
+    // Remove do inventário (stackable com qty: decrementa; senão: remove)
+    if (slot.qty && slot.qty > 1) {
+      slot.qty -= 1;
+    } else {
+      p.inventory = p.inventory.filter(i => i.id !== itemId);
+    }
+
+    socket.emit('item:use_result', { ok: true, itemId, effect, hp: p.hp, mana: p.mana, inventory: p.inventory });
     socket.emit('inventory:updated', { inventory: p.inventory });
   });
 
@@ -298,60 +367,10 @@ io.on('connection', (socket) => {
     const result = zone.players.convertYellowFame(p, gearId);
     socket.emit('mastery:convert_result', result);
   });
-
-  // ── repair:item ──────────────────────────────────────────────────────────────
-  // Repara um ou todos os slots no NPC Ferreiro. Debita ouro e restaura durabilidade.
-  // Payload: { slot: 'weapon'|'chest'|'head'|'boots'|'all' }
-  // Requer: player dentro de BLACKSMITH_RANGE do BLACKSMITH_X/Y.
-  socket.on('repair:item', ({ slot } = {}) => {
-    const zone = zones.getZone(socket.id);
-    if (!zone) return;
-    const p = zone.world.getPlayer(socket.id);
-    if (!p || p.dead) return;
-
-    // Valida proximidade ao Ferreiro
-    const dist = Math.hypot(p.x - BLACKSMITH_X, p.y - BLACKSMITH_Y);
-    if (dist > BLACKSMITH_RANGE) {
-      socket.emit('repair:result', { error: 'too_far', dist: Math.round(dist) });
-      return;
-    }
-
-    const result = zone.players.repairItem(p, slot || 'all');
-    socket.emit('repair:result', result);
-  });
-
-  // ── ping_rtt ─────────────────────────────────────────────────────────────────
-  // Medição de RTT — compatível com NetworkManager.cs
+  // ping_rtt
   socket.on('ping_rtt', (ts) => socket.emit('pong_rtt', ts));
-
-  // ── disconnect ───────────────────────────────────────────────────────────────
-  socket.on('disconnect', () => {
-    const zone  = zones.getZone(socket.id);
-    const token = socketTokens.get(socket.id);
-
-    // Salva estado para possível reconexão
-    if (zone && token) {
-      const player = zone.world.getPlayer(socket.id);
-      if (player) {
-        sessions.save(token, player, zones.getZoneId(socket.id));
-      }
-    }
-
-    zones.leaveZone(socket);
-    socketTokens.delete(socket.id);
-    console.log(`[-] ${socket.id}`);
-  });
 });
 
-// ----- Diagnóstico (opcional: remove em produção) -----
-setInterval(() => {
-  const stats = zones.getStats();
-  const total = Object.values(stats).reduce((s, z) => s + z.players, 0);
-  if (total > 0) console.log('[Stats]', JSON.stringify(stats));
-}, 30_000);
-
-// ----- Start -----
-http.listen(PORT, () => {
-  console.log(`\nMMO v2 rodando em http://localhost:${PORT}`);
-  console.log(`Zona "overworld" ativa.`);
+server.listen(PORT, () => {
+  console.log(`[Servidor] Ouvindo na porta ${PORT}`);
 });
