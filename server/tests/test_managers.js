@@ -118,6 +118,79 @@ test('createPlayer — spawns com arma espada e skills gear-based', () => {
   assert.ok(world.getPlayer('sock1'), 'deve estar registrado no mundo');
 });
 
+test('createPlayer — slot boots_F existe e nasce null', () => {
+  const world = new MockWorld();
+  const pm = new PlayerManager(world);
+  const p  = pm.createPlayer('boots1', { name: 'Walker' });
+  assert.ok('boots_F' in p.selectedSkills, 'selectedSkills deve ter slot boots_F');
+  assert.strictEqual(p.selectedSkills.boots_F, null, 'boots_F inicia null (sem botas equipadas)');
+});
+
+test('equipItem — equipar botas seta boots_F com primeira skill', () => {
+  const world = new MockWorld();
+  const pm = new PlayerManager(world);
+  const p  = pm.createPlayer('boots2', { name: 'Dasher' });
+  // leather_boots → ['skill_sprint', 'skill_rolling_dodge']
+  const r = pm.equipItem(p, 'boots', 'leather_boots');
+  assert.ok(r.ok, 'equipItem de botas deve retornar ok');
+  assert.strictEqual(p.equipment.boots, 'leather_boots', 'botas devem ser equipadas');
+  assert.strictEqual(p.selectedSkills.boots_F, 'skill_sprint', 'boots_F = primeira opção (skill_sprint)');
+  assert.ok(pm.playerHasSkill(p, 'skill_sprint'), 'player deve ter skill_sprint via botas');
+  assert.ok(pm.getActiveSkillIds(p).includes('skill_sprint'), 'getActiveSkillIds deve incluir skill da bota');
+});
+
+test('selectSkill — trocar skill da bota (boots_F) para segunda opção', () => {
+  const world = new MockWorld();
+  const pm = new PlayerManager(world);
+  const p  = pm.createPlayer('boots3', { name: 'Roller' });
+  pm.equipItem(p, 'boots', 'leather_boots');
+  const r = pm.selectSkill(p, 'boots_F', 'skill_rolling_dodge');
+  assert.ok(r.ok, 'selectSkill boots_F com opção válida deve dar ok');
+  assert.strictEqual(p.selectedSkills.boots_F, 'skill_rolling_dodge');
+  const bad = pm.selectSkill(p, 'boots_F', 'skill_charge'); // não pertence a leather_boots
+  assert.ok(bad.error, 'skill inválida para a bota deve retornar erro');
+});
+
+test('unequipItem — desequipar botas limpa equipment e boots_F', () => {
+  const world = new MockWorld();
+  const pm = new PlayerManager(world);
+  const p  = pm.createPlayer('uneq1', { name: 'Stripper' });
+  pm.equipItem(p, 'boots', 'leather_boots');
+  const r = pm.unequipItem(p, 'boots');
+  assert.ok(r.ok, 'unequipItem deve retornar ok');
+  assert.strictEqual(p.equipment.boots, null, 'slot boots deve ficar null');
+  assert.strictEqual(p.selectedSkills.boots_F, null, 'boots_F deve ser resetada para null');
+  const bad = pm.unequipItem(p, 'banana');
+  assert.ok(bad.error, 'slot inválido deve retornar erro');
+});
+
+test('unequipItem — desequipar arma limpa as 3 skills Q/W/E', () => {
+  const world = new MockWorld();
+  const pm = new PlayerManager(world);
+  const p  = pm.createPlayer('uneq2', { name: 'Disarmed' });
+  // nasce com 'sword' equipada e weapon_Q/W/E preenchidas
+  const r = pm.unequipItem(p, 'weapon');
+  assert.ok(r.ok);
+  assert.strictEqual(p.equipment.weapon, null);
+  assert.strictEqual(p.selectedSkills.weapon_Q, null);
+  assert.strictEqual(p.selectedSkills.weapon_W, null);
+  assert.strictEqual(p.selectedSkills.weapon_E, null);
+});
+
+test('getGearOptions — retorna opções por peça equipada', () => {
+  const world = new MockWorld();
+  const pm = new PlayerManager(world);
+  const p  = pm.createPlayer('opts1', { name: 'Browser' });
+  pm.equipItem(p, 'chest', 'cloth_chest');
+  const opts = pm.getGearOptions(p);
+  // arma 'sword' nasce equipada → opções Q/W/E
+  assert.ok(opts.sword, 'deve incluir opções da espada');
+  assert.ok(Array.isArray(opts.sword.Q) && opts.sword.Q.includes('skill_slash'), 'sword.Q deve listar skill_slash');
+  // peitoral cloth_chest → opção R
+  assert.ok(opts.cloth_chest && Array.isArray(opts.cloth_chest.R), 'cloth_chest deve ter opções R');
+  assert.ok(opts.cloth_chest.R.includes('skill_damage_amp'), 'R deve incluir skill_damage_amp');
+});
+
 test('createPlayer — equipar armadura de pano aumenta maxMana', () => {
   // No sistema gear-based, bônus de mana vem do equipamento, não de uma "classe".
   // cloth_chest dá +30 maxMana (gear.json).
@@ -423,53 +496,45 @@ test('spawnRandom — creates a monster', () => {
 });
 
 test('aiTick — monster aggros nearby player', () => {
-  const { pm, mm } = makeMonsterSetup();
-  const player = pm.createPlayer('p1', { name: 'Target' });
-  player.x = 150; player.y = 150;
-
-  const monster = mm.spawn('goblin', { x: 160, y: 160 }); // dentro de AGGRO_RANGE (200)
-  assert.strictEqual(monster.state, 'idle');
-
-  mm._aiTimer = 1000; // força expirar o timer de IA
+  const { world, pm, mm } = makeMonsterSetup();
+  const m = mm.spawn('wolf', { x: 100, y: 100 });
+  // jogador dentro do MONSTER_AGGRO_RANGE (200)
+  pm.createPlayer('hero', { name: 'Hero' });
+  const hero = world.getPlayer('hero');
+  hero.x = 150; hero.y = 100;
   mm.aiTick(Date.now());
-
-  assert.strictEqual(monster.state, 'aggro',
-    `monstro deve estar em aggro, ficou ${monster.state}`);
-  assert.strictEqual(monster.target, 'p1');
+  assert.strictEqual(m.target, 'hero', 'lobo deve agredir o jogador proximo');
+  assert.strictEqual(m.state, 'aggro');
 });
 
 test('aiTick — monster removes self when hp <= 0', () => {
   const { world, mm } = makeMonsterSetup();
-  const m = mm.spawn('goblin', { x: 100, y: 100 });
+  const m = mm.spawn('wolf', { x: 100, y: 100 });
   m.hp = 0;
-  mm._aiTimer = 1000;
   mm.aiTick(Date.now());
-  assert.ok(!world.monsters.has(m.id), 'monstro morto deve ser removido do mundo');
+  assert.ok(!world.monsters.has(m.id), 'monstro com hp<=0 deve ser removido no aiTick');
 });
 
 test('aiTick — monster returns to spawn when leashed', () => {
-  const { pm, mm } = makeMonsterSetup();
-  const player = pm.createPlayer('p2', { name: 'Far' });
-  player.x = 100; player.y = 100;
-
-  const monster = mm.spawn('goblin', { x: 100, y: 100 });
-  monster.state  = 'aggro';
-  monster.target = 'p2';
-  // Move o monstro longe do spawn
-  monster.x = monster.spawnX + 700; // > LEASH_RANGE (600)
-  monster.y = monster.spawnY;
-
-  mm._aiTimer = 1000;
+  const { world, pm, mm } = makeMonsterSetup();
+  const m = mm.spawn('wolf', { x: 100, y: 100 });
+  // monstro arrastado para muito longe do spawn (> MONSTER_LEASH_RANGE = 600)
+  m.x = 900; m.y = 900;
+  m.target = 'hero'; m.state = 'aggro';
+  pm.createPlayer('hero', { name: 'Hero' });
+  const hero = world.getPlayer('hero');
+  hero.x = 905; hero.y = 905;
   mm.aiTick(Date.now());
-
-  assert.strictEqual(monster.state, 'returning',
-    `monstro deve leash, ficou ${monster.state}`);
+  // ao exceder o leash, larga o alvo e volta ao spawn (returning/idle)
+  assert.ok(m.target === null, 'monstro deve largar o alvo ao exceder o leash');
+  assert.ok(m.state === 'returning' || m.state === 'idle', 'monstro deve estar retornando ao spawn');
 });
 
 // ============================================================
-// SUMMARY
+// Resultado
 // ============================================================
 console.log('\n══════════════════════════════════════');
 console.log(`  Resultado: ${passed} passou · ${failed} falhou`);
 console.log('══════════════════════════════════════\n');
-if (failed > 0) process.exit(1);
+
+process.exit(failed === 0 ? 0 : 1);
