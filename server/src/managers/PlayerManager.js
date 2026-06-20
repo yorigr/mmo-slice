@@ -1,5 +1,11 @@
 // PlayerManager -- criação, movimento, spawn/respawn de players
-// v4: sistema gear-based (sem classes fixas). Skills derivadas do equipamento.
+// v5: sistema gear-based + Equipment Mastery (maestria individual por peça, inspirada no Albion).
+//
+// Maestria:
+//   • Armas  → XP por skill ofensiva/suporte resolvida (MASTERY_XP_PER_USE)
+//   • Armaduras → XP por absorver dano com a peça equipada (MASTERY_XP_PER_HIT)
+//   • Ao atingir maestria máxima: XP excedente vira "Fama Amarela pendente"
+//   • Fama Amarela → convertida em bônus permanentes pagando ouro ao Instrutor NPC
 const { v4: uuidv4 } = require('uuid');
 const {
   MAX_HP, MAX_MANA, MAX_STAMINA, MAX_SPEED, MANA_REGEN_PER_SEC,
@@ -7,6 +13,10 @@ const {
   MAX_DURABILITY, DURABILITY_DEATH_PENALTY, CRAFT_FOCUS_MAX,
   DEATH_DESTROY_RATES, DEATH_RESOURCE_LOSS_RATE,
   REPAIR_BASE_VALUES, REPAIR_COST_RATE,
+  MASTERY_MAX_LEVEL, MASTERY_XP_TABLE,
+  MASTERY_CLOTH_MANA_PER_LEVEL, MASTERY_LEATHER_DODGE_PER_LEVEL, MASTERY_PLATE_DR_PER_LEVEL,
+  YELLOW_FAME_MAX_LEVEL, YELLOW_FAME_XP_TABLE, YELLOW_FAME_GOLD_TABLE,
+  YELLOW_FAME_CLOTH_MANA_PER_LEVEL, YELLOW_FAME_LEATHER_DODGE_PER_LEVEL, YELLOW_FAME_PLATE_DR_PER_LEVEL,
 } = require('../config/constants');
 const GEAR = require('../config/gear.json');
 
@@ -16,6 +26,16 @@ function xpNeededForLevel(level) {
 }
 
 const PLAYER_RADIUS = 22;
+
+// Entrada de maestria zerada (level 1, sem XP, sem Fama Amarela).
+function _emptyMastery() {
+  return { level: 1, xp: 0, xpMax: MASTERY_XP_TABLE[0], yellowFame: { pending: 0, level: 0 } };
+}
+
+// Todos os IDs de gear conhecidos (para pré-criar entradas de maestria).
+const ALL_WEAPON_IDS = Object.keys(GEAR.weapons);
+const ALL_ARMOR_IDS  = Object.keys(GEAR.armors);
+const ALL_GEAR_IDS   = [...ALL_WEAPON_IDS, ...ALL_ARMOR_IDS];
 
 // Estatísticas base derivadas do gear equipado.
 // Peças com durabilidade 0 estão quebradas e não fornecem stats.
@@ -66,6 +86,12 @@ class PlayerManager {
     const maxMana  = MAX_MANA + (gearStats.maxMana  || 0);
     const speed    = MAX_SPEED + (gearStats.speed   || 0);
 
+    // Maestria de equipamento: entrada para cada peça de gear conhecida.
+    // Armas ganham XP por usar skills; armaduras ganham XP por absorver dano.
+    const equipmentMastery = Object.fromEntries(
+      ALL_GEAR_IDS.map(id => [id, _emptyMastery()])
+    );
+
     const state = {
       id:       socketId,
       name:     name || 'Aventureiro',
@@ -86,6 +112,7 @@ class PlayerManager {
       cooldowns:  {},
       shield:     0,
       dodgeChance: 0,
+      masteryDodgeBonus: 0,   // bônus de dodge acumulado por maestria de leather
       damageBonus: 1,
       damageReduction: gearStats.damageReduction || 0,
       damageMult: 1,
@@ -102,9 +129,12 @@ class PlayerManager {
       gold:   0,
 
       // Gear-based
-      equipment:     starterEquipment,    // { weapon, chest, head, boots }
+      equipment:      starterEquipment,   // { weapon, chest, head, boots }
       selectedSkills: starterSkills,      // { weapon_Q, weapon_W, weapon_E, chest_R, head_D }
-      durability:    starterDurability,   // { weapon, chest, head, boots } — 0–100 por slot
+      durability:     starterDurability,  // { weapon, chest, head, boots } — 0–100 por slot
+
+      // Maestria individual por peça de equipamento
+      equipmentMastery,
 
       // Inventário
       inventory: [],
@@ -136,6 +166,189 @@ class PlayerManager {
     return state;
   }
 
+  // ── Cálculo de Stats ─────────────────────────────────────────────────────────
+
+  /**
+   * Recalcula maxHp, maxMana, damageReduction e masteryDodgeBonus do player
+   * levando em conta gear + durabilidade + maestria de armaduras equipadas.
+   * Deve ser chamado após equipar/desposar gear, após reparo e após level up de maestria.
+   */
+  _recalcStats(player) {
+    const gs = computeGearStats(player.equipment, player.durability);
+    const ms = this._computeArmorMasteryBonuses(player);
+    player.maxHp = MAX_HP + (gs.maxHp || 0) + Math.round(player.level * 5) + (ms.maxHp || 0);
+    player.maxMana = MAX_MANA + (gs.maxMana || 0) + (ms.maxMana || 0);
+    player.damageReduction = (gs.damageReduction || 0) + (ms.damageReduction || 0);
+    player.masteryDodgeBonus = ms.dodgeChance || 0;
+  }
+
+  /**
+   * Computa bônus de stats derivados da maestria de armaduras atualmente equipadas.
+   * Retorna { maxHp, maxMana, damageReduction, dodgeChance }.
+   */
+  _computeArmorMasteryBonuses(player) {
+    const bonuses = { maxHp: 0, maxMana: 0, damageReduction: 0, dodgeChance: 0 };
+    const em = player.equipmentMastery;
+    if (!em) return bonuses;
+
+    for (const [slot, gearId] of Object.entries(player.equipment)) {
+      if (slot === 'weapon' || !gearId) continue;
+      const armorDef = GEAR.armors[gearId];
+      if (!armorDef) continue;
+      const mastery = em[gearId];
+      if (!mastery) continue;
+
+      // level - 1 porque nível 1 = sem bônus ainda (mesmo que no Albion)
+      const mastLevels = mastery.level - 1;
+      const yfLevels   = mastery.yellowFame?.level || 0;
+
+      switch (armorDef.armorType) {
+        case 'cloth':
+          bonuses.maxMana += mastLevels * MASTERY_CLOTH_MANA_PER_LEVEL
+                           + yfLevels  * YELLOW_FAME_CLOTH_MANA_PER_LEVEL;
+          break;
+        case 'leather':
+          bonuses.dodgeChance += mastLevels * MASTERY_LEATHER_DODGE_PER_LEVEL
+                               + yfLevels  * YELLOW_FAME_LEATHER_DODGE_PER_LEVEL;
+          break;
+        case 'plate':
+          bonuses.damageReduction += mastLevels * MASTERY_PLATE_DR_PER_LEVEL
+                                   + yfLevels  * YELLOW_FAME_PLATE_DR_PER_LEVEL;
+          break;
+      }
+    }
+    return bonuses;
+  }
+
+  // ── Maestria ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Concede XP de maestria ao gearId especificado (arma ou armadura).
+   *
+   * • Se ainda não atingiu MASTERY_MAX_LEVEL: XP normal, com level up automático.
+   * • Se já está no máximo: XP vira "Fama Amarela pendente".
+   * • Se yellowFame.level já está no YELLOW_FAME_MAX_LEVEL: descarta (tudo maxado).
+   *
+   * Emite:
+   *   mastery:xp         — progresso de XP normal
+   *   mastery:levelup    — quando a maestria sobe de nível
+   *   mastery:yellow_fame — quando XP vai para Fama Amarela pendente
+   */
+  gainMasteryXp(player, gearId, xp) {
+    if (!player.equipmentMastery) return;
+    const m = player.equipmentMastery[gearId];
+    if (!m) return;
+
+    // Completamente maxado: nada a ganhar
+    if (m.level >= MASTERY_MAX_LEVEL && m.yellowFame.level >= YELLOW_FAME_MAX_LEVEL) return;
+
+    const isArmor = !!GEAR.armors[gearId];
+
+    if (m.level < MASTERY_MAX_LEVEL) {
+      // ── Fase de maestria normal ──────────────────────────────────────────────
+      m.xp += xp;
+      let leveledUp = false;
+
+      while (m.xp >= m.xpMax && m.level < MASTERY_MAX_LEVEL) {
+        m.xp  -= m.xpMax;
+        m.level += 1;
+        leveledUp = true;
+
+        // xpMax para o próximo nível (índice = novo nível - 1)
+        m.xpMax = m.level < MASTERY_MAX_LEVEL
+          ? MASTERY_XP_TABLE[m.level - 1]
+          : 0;  // sentinela — maxado
+
+        this.world.io.to(player.id).emit('mastery:levelup', {
+          gearId,
+          level:   m.level,
+          xp:      m.xp,
+          xpMax:   m.level < MASTERY_MAX_LEVEL ? m.xpMax : null,
+          isMaxed: m.level >= MASTERY_MAX_LEVEL,
+        });
+      }
+
+      // XP restante após atingir o máximo vai para Fama Amarela pendente
+      if (m.level >= MASTERY_MAX_LEVEL && m.xp > 0) {
+        if (m.yellowFame.level < YELLOW_FAME_MAX_LEVEL) {
+          m.yellowFame.pending += m.xp;
+        }
+        m.xp = 0;
+      }
+
+      // Recalcula stats de armadura quando maestria sobe de nível
+      if (leveledUp && isArmor) this._recalcStats(player);
+
+      // Emite progresso de XP (se ainda não maxado)
+      if (m.level < MASTERY_MAX_LEVEL) {
+        this.world.io.to(player.id).emit('mastery:xp', {
+          gearId, level: m.level, xp: m.xp, xpMax: m.xpMax,
+        });
+      }
+
+    } else {
+      // ── Fase de Fama Amarela: XP excedente acumula como pendente ────────────
+      if (m.yellowFame.level < YELLOW_FAME_MAX_LEVEL) {
+        m.yellowFame.pending += xp;
+        this.world.io.to(player.id).emit('mastery:yellow_fame', {
+          gearId,
+          pending:  m.yellowFame.pending,
+          level:    m.yellowFame.level,
+          xpNeeded: YELLOW_FAME_XP_TABLE[m.yellowFame.level] ?? null,
+        });
+      }
+    }
+  }
+
+  /**
+   * Converte Fama Amarela pendente em nível permanente, cobrando ouro.
+   * Deve ser chamado apenas quando o player está próximo do NPC Instrutor.
+   *
+   * @param {object} player
+   * @param {string} gearId - ID do equipamento (ex: 'sword', 'cloth_chest')
+   * @returns {{ ok?, error?, ... }}
+   */
+  convertYellowFame(player, gearId) {
+    if (!gearId) return { error: 'missing_gear_id' };
+    const m = player.equipmentMastery?.[gearId];
+    if (!m) return { error: 'unknown_gear' };
+    if (m.level < MASTERY_MAX_LEVEL) return { error: 'mastery_not_maxed', level: m.level };
+    if (m.yellowFame.level >= YELLOW_FAME_MAX_LEVEL) return { error: 'yellow_fame_maxed' };
+
+    const nextIdx  = m.yellowFame.level;          // 0-indexed para as tabelas
+    const xpNeeded = YELLOW_FAME_XP_TABLE[nextIdx];
+    const goldCost = YELLOW_FAME_GOLD_TABLE[nextIdx];
+
+    if (m.yellowFame.pending < xpNeeded)
+      return { error: 'not_enough_pending', pending: m.yellowFame.pending, xpNeeded };
+    if (player.gold < goldCost)
+      return { error: 'not_enough_gold', cost: goldCost, gold: player.gold };
+
+    // Debita XP pendente e ouro
+    m.yellowFame.pending -= xpNeeded;
+    player.gold          -= goldCost;
+    m.yellowFame.level   += 1;
+
+    // Recalcula stats se for armadura (armas têm bônus dinâmico no CombatEngine)
+    if (GEAR.armors[gearId]) this._recalcStats(player);
+
+    return {
+      ok:              true,
+      gearId,
+      yellowFameLevel: m.yellowFame.level,
+      gold:            player.gold,
+      goldSpent:       goldCost,
+      pending:         m.yellowFame.pending,
+      // próximo nível (null se maxado)
+      nextXpNeeded:    m.yellowFame.level < YELLOW_FAME_MAX_LEVEL
+                         ? YELLOW_FAME_XP_TABLE[m.yellowFame.level] : null,
+      nextGoldCost:    m.yellowFame.level < YELLOW_FAME_MAX_LEVEL
+                         ? YELLOW_FAME_GOLD_TABLE[m.yellowFame.level] : null,
+    };
+  }
+
+  // ── Skills e Gear ────────────────────────────────────────────────────────────
+
   // Retorna o array de skills ativas (até 5) baseado no equipment atual.
   // Peças com durabilidade 0 estão quebradas: skill do slot retorna null.
   getActiveSkillIds(player) {
@@ -166,6 +379,8 @@ class PlayerManager {
     if (s.head_D  === skillId) return (dur.head  ?? MAX_DURABILITY) > 0;
     return false;
   }
+
+  // ── Movimento ───────────────────────────────────────────────────────────────
 
   handleMove(playerId, { x, y }, now = Date.now()) {
     const p = this.world.getPlayer(playerId);
@@ -206,6 +421,8 @@ class PlayerManager {
     this._resolveCollisions(p);
   }
 
+  // ── Regen ───────────────────────────────────────────────────────────────────
+
   // Regenação chamada pelo ZoneManager a cada tick (itera todos os players da zona).
   regenTick(dtSec) {
     const now = Date.now();
@@ -231,12 +448,16 @@ class PlayerManager {
     }
   }
 
+  // ── Remoção ─────────────────────────────────────────────────────────────────
+
   removePlayer(socketId) {
     this.world.removePlayer(socketId);
   }
 
+  // ── Morte ──────────
+
   /**
-   * Processa destruição e drop de itens ao morrer.
+   * Processa destruicao e drop de itens ao morrer.
    * Chamado por CombatEngine antes de scheduleRespawn.
    *
    * @param {object} player    - State do player que morreu
@@ -253,20 +474,19 @@ class PlayerManager {
 
     if (rate === 0) return { destroyed, dropped, kept };
 
-    // Mapa de slot de equipment → slots de skill relacionados
+    // Mapa de slot de equipment -> slots de skill relacionados
     const SLOT_TO_SKILLS = {
       weapon: ['weapon_Q', 'weapon_W', 'weapon_E'],
       chest:  ['chest_R'],
       head:   ['head_D'],
-      boots:  [],          // boots ainda não tem skill slot ativo
+      boots:  [],
     };
 
-    // Processa cada peça de equipment individualmente
+    // Processa cada peca de equipment individualmente
     for (const [slot, gearId] of Object.entries(player.equipment)) {
       if (!gearId) continue;
 
       if (Math.random() < rate) {
-        // Destruído permanentemente
         player.equipment[slot] = null;
         for (const sk of (SLOT_TO_SKILLS[slot] || [])) {
           player.selectedSkills[sk] = null;
@@ -274,8 +494,7 @@ class PlayerManager {
         destroyed.push({ slot, gearId });
 
       } else if (canLoot) {
-        // Dropa no mundo (lootável em red/black zones)
-        const itemId = uuidv4();
+        const itemId = require('uuid').v4();
         this.world.addItem({
           id:   itemId,
           type: gearId,
@@ -289,30 +508,26 @@ class PlayerManager {
         dropped.push({ slot, gearId, itemId });
 
       } else {
-        // Mantido (yellow zone: destruição possível mas sem loot por outros)
         kept.push({ slot, gearId });
       }
     }
 
-    // Destroi 10% de cada stack de material no inventário
+    // Destroi 10% de cada stack de material no inventario
     for (const item of player.inventory) {
       if (item.qty && item.qty > 0) {
         const loss = Math.ceil(item.qty * DEATH_RESOURCE_LOSS_RATE);
         item.qty = Math.max(0, item.qty - loss);
       }
     }
-    // Remove stacks zerados do inventário
     player.inventory = player.inventory.filter(i => !i.qty || i.qty > 0);
 
-    // Penalidade de durabilidade nas peças que sobreviveram (não foram destruídas nem dropadas)
-    // -DURABILITY_DEATH_PENALTY pontos por morte
+    // Penalidade de durabilidade nas pecas mantidas
     if (!player.durability) player.durability = {};
     for (const { slot } of kept) {
       player.durability[slot] = Math.max(0,
         (player.durability[slot] ?? MAX_DURABILITY) - DURABILITY_DEATH_PENALTY
       );
     }
-    // Peças destruídas/dropadas já saíram do equipment; zera durabilidade do slot
     for (const { slot } of [...destroyed, ...dropped]) {
       player.durability[slot] = 0;
     }
@@ -322,15 +537,14 @@ class PlayerManager {
 
   scheduleRespawn(player) {
     setTimeout(() => {
-      if (!player.dead) return; // já ressuscitado por outro jogador
+      if (!player.dead) return;
       player.dead     = false;
-      player.hp       = Math.ceil(player.maxHp * 0.3); // ressuscita com 30% HP
+      player.hp       = Math.ceil(player.maxHp * 0.3);
       player.mana     = 0;
       player.shield   = 0;
       player.casting  = null;
       player.statusEffects = {};
 
-      // Move para spawn
       player.x = MAP_W / 2 + (Math.random() - 0.5) * 200;
       player.y = MAP_H / 2 + (Math.random() - 0.5) * 200;
 
@@ -341,6 +555,8 @@ class PlayerManager {
       });
     }, RESPAWN_MS);
   }
+
+  // ── Level Up ─────────────────────────────────────────────────────────────────
 
   checkLevelUp(player) {
     while (player.xp >= player.xpMax && player.level < MAX_LEVEL) {
@@ -365,18 +581,18 @@ class PlayerManager {
     }
   }
 
-  // Equipa uma peça de gear e recalcula stats + skills disponíveis.
+  // ── Equip / Select ───────────────────────────────────────────────────────────
+
+  // Equipa uma peca de gear e recalcula stats + skills disponiveis.
   equipItem(player, slot, gearId) {
     const validSlots = ['weapon', 'chest', 'head', 'boots'];
     if (!validSlots.includes(slot)) return { error: 'invalid_slot' };
 
     if (slot === 'weapon') {
-      // Valida que existe no gear.json
       if (!GEAR.weapons[gearId]) return { error: 'unknown_weapon' };
       player.equipment.weapon = gearId;
-      player.durability.weapon = MAX_DURABILITY;  // item recém-equipado começa inteiro
+      player.durability.weapon = MAX_DURABILITY;
 
-      // Reset skill selection para defaults da nova arma
       const wDef = GEAR.weapons[gearId];
       player.selectedSkills.weapon_Q = wDef.slots.Q.options[0];
       player.selectedSkills.weapon_W = wDef.slots.W.options[0];
@@ -388,19 +604,14 @@ class PlayerManager {
       if (aDef.slot !== slot) return { error: 'wrong_slot' };
 
       player.equipment[slot] = gearId;
-      player.durability[slot] = MAX_DURABILITY;  // item recém-equipado começa inteiro
+      player.durability[slot] = MAX_DURABILITY;
 
-      // Reset skill selection para default da nova armadura
       const skillSlot = armorSlotMap[slot];
       if (skillSlot) player.selectedSkills[skillSlot] = aDef.skill.options[0];
     }
 
-    // Recalcula stats de gear (respeita durabilidade das outras peças)
-    const gs = computeGearStats(player.equipment, player.durability);
-    player.maxHp   = MAX_HP   + (gs.maxHp   || 0) + Math.round(player.level * 5);
-    player.maxMana = MAX_MANA + (gs.maxMana  || 0);
-    player.damageReduction = gs.damageReduction || 0;
-
+    // Recalcula stats (gear + maestria de armaduras)
+    this._recalcStats(player);
     return { ok: true };
   }
 
@@ -409,16 +620,14 @@ class PlayerManager {
     const validSlots = ['weapon_Q', 'weapon_W', 'weapon_E', 'chest_R', 'head_D'];
     if (!validSlots.includes(slotKey)) return { error: 'invalid_slot' };
 
-    // Verifica que a skill está disponível no gear equipado
     const weaponId = player.equipment?.weapon;
     const wDef     = weaponId ? GEAR.weapons[weaponId] : null;
-    const slotName = slotKey.split('_')[1];  // Q, W, E, R, D
+    const slotName = slotKey.split('_')[1];
 
     if (['Q', 'W', 'E'].includes(slotName)) {
       if (!wDef || !wDef.slots[slotName]?.options.includes(skillId))
         return { error: 'skill_not_available' };
     } else {
-      // Armadura
       const armorMap = { R: 'chest', D: 'head' };
       const armorId  = player.equipment?.[armorMap[slotName]];
       const aDef     = armorId ? GEAR.armors[armorId] : null;
@@ -430,13 +639,11 @@ class PlayerManager {
     return { ok: true };
   }
 
+  // ── Reparo ───────────────────────────────────────────────────────────────────
+
   /**
    * Repara um ou todos os slots de equipment, cobrando ouro.
-   * Deve ser chamado apenas quando o player está próximo do NPC Ferreiro.
-   *
-   * @param {object} player
-   * @param {string} slot - nome do slot ('weapon'|'chest'|'head'|'boots') ou 'all'
-   * @returns {{ ok?, error?, totalCost?, repairs?, gold? }}
+   * Deve ser chamado apenas quando o player esta proximo do NPC Ferreiro.
    */
   repairItem(player, slot) {
     if (!player.durability) player.durability = {};
@@ -449,14 +656,13 @@ class PlayerManager {
     if (slotsToRepair.length === 0)
       return { error: slot === 'all' ? 'nothing_equipped' : 'invalid_slot' };
 
-    // Calcula custo total antes de debitar
     let totalCost = 0;
     const repairs = [];
     for (const s of slotsToRepair) {
       const gearId = player.equipment[s];
       if (!gearId) continue;
       const curDur = player.durability[s] ?? MAX_DURABILITY;
-      if (curDur >= MAX_DURABILITY) continue;  // já está inteiro
+      if (curDur >= MAX_DURABILITY) continue;
       const baseValue = REPAIR_BASE_VALUES[gearId] || 100;
       const cost = Math.ceil(baseValue * (1 - curDur / MAX_DURABILITY) * REPAIR_COST_RATE);
       repairs.push({ slot: s, gearId, fromDurability: curDur, cost });
@@ -466,20 +672,17 @@ class PlayerManager {
     if (repairs.length === 0) return { error: 'already_repaired' };
     if (player.gold < totalCost) return { error: 'not_enough_gold', cost: totalCost, gold: player.gold };
 
-    // Debita ouro e restaura durabilidade
     player.gold -= totalCost;
     for (const r of repairs) {
       player.durability[r.slot] = MAX_DURABILITY;
     }
 
-    // Recalcula stats (peças antes quebradas podem voltar a dar stats)
-    const gs = computeGearStats(player.equipment, player.durability);
-    player.maxHp   = MAX_HP   + (gs.maxHp   || 0) + Math.round(player.level * 5);
-    player.maxMana = MAX_MANA + (gs.maxMana  || 0);
-    player.damageReduction = gs.damageReduction || 0;
-
+    // Recalcula stats (pecas antes quebradas voltam a contribuir)
+    this._recalcStats(player);
     return { ok: true, totalCost, repairs, gold: player.gold };
   }
+
+  // ── Colisoes ─────────────────────────────────────────────────────────────────
 
   _resolveCollisions(p) {
     for (const other of this.world.players.values()) {
@@ -494,6 +697,12 @@ class PlayerManager {
       }
     }
     p.x = Math.max(PLAYER_RADIUS, Math.min(MAP_W - PLAYER_RADIUS, p.x));
+    p.y = Math.max(PLAYER_RADIUS, Math.min(MAP_H - PLAYER_RADIUS, p.y));
+  }
+}
+
+module.exports = PlayerManager;
+ath.max(PLAYER_RADIUS, Math.min(MAP_W - PLAYER_RADIUS, p.x));
     p.y = Math.max(PLAYER_RADIUS, Math.min(MAP_H - PLAYER_RADIUS, p.y));
   }
 }
