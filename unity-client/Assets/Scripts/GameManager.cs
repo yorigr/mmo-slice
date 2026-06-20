@@ -50,6 +50,7 @@ namespace MMORPG
         [SerializeField] private ItemWorldController   itemController;    // Opcional: auto-cria se nulo
         [SerializeField] private RespawnPanel          respawnPanel;      // Opcional: auto-cria se nulo
         [SerializeField] private ChatUI                chatUI;            // Opcional: auto-cria se nulo
+        [SerializeField] private UIManager             uiManager;         // Opcional: auto-cria se nulo (painéis P/C/K/I)
 
         // ─── Estado interno ───────────────────────────────────────────────────────
         private NetworkManager _net;
@@ -107,6 +108,18 @@ namespace MMORPG
             _net.OnEvent["combat:hits"]      = HandleCombatHits;
             _net.OnEvent["combat:deaths"]    = HandleCombatDeaths;
 
+            // Eventos de gear / skills / inventário / maestria — alimentam os 4 painéis de UI.
+            // Mantêm WorldState.Local sincronizado e disparam OnLocalStateUpdated.
+            _net.OnEvent["gear:equipped"]        = HandleGearEquipped;
+            _net.OnEvent["gear:unequipped"]      = HandleGearUnequipped;
+            _net.OnEvent["skill:select_result"]  = HandleSkillSelectResult;
+            _net.OnEvent["inventory:updated"]    = HandleInventoryUpdated;
+            _net.OnEvent["repair:result"]        = HandleRepairResult;
+            _net.OnEvent["mastery:xp"]           = HandleMasteryXp;
+            _net.OnEvent["mastery:levelup"]      = HandleMasteryLevelUp;
+            _net.OnEvent["mastery:yellow_fame"]  = HandleMasteryYellowFame;
+            _net.OnEvent["mastery:convert_result"] = HandleMasteryConvertResult;
+
             // Registra callbacks do WorldState para spawning de remotos
             if (_world != null)
             {
@@ -126,6 +139,14 @@ namespace MMORPG
 
             if (chatUI == null)
                 chatUI = gameObject.AddComponent<ChatUI>();
+
+            // UIManager: orquestra os 4 painéis (Status/PaperDoll/SkillTree/Inventory).
+            // Auto-criado como GameObject persistente — zero configuração no Editor.
+            if (uiManager == null)
+            {
+                var uiGo = new GameObject("UIManager");
+                uiManager = uiGo.AddComponent<UIManager>();
+            }
 
             // ChatUI precisa registrar o evento chat:message assim que NetworkManager conectar.
             // Registramos aqui (antes de Connect()) porque o NetworkManager pode já estar pronto.
@@ -195,7 +216,7 @@ namespace MMORPG
         // ─── Handlers de eventos do servidor ─────────────────────────────────────
         private void HandlePlayerJoined(string json)
         {
-            // Payload: { id, sessionToken, world, abilities:[...], state:{x,y,name,hp,...} }
+            // Payload: { id, sessionToken, world, abilities:[...], gearOptions, state:{x,y,name,hp,...} }
             _world?.HandlePlayerJoined(json);
 
             var idPayload = JsonUtility.FromJson<IdExtract>(json);
@@ -205,6 +226,10 @@ namespace MMORPG
             if (string.IsNullOrEmpty(_world?.LocalPlayerId))
             {
                 AssignLocalPlayer(idPayload.id, json);
+
+                // Carrega o estado local COMPLETO (equipment, skills, durabilidade,
+                // inventário, maestria, gearOptions) para alimentar os painéis de UI.
+                _world?.LoadLocalFullState(json);
             }
         }
 
@@ -403,4 +428,224 @@ namespace MMORPG
             Debug.Log($"[GameManager] Jogador remoto removido: {playerId}");
         }
 
-        // ─── Sincronização de remotos ──�
+        // ─── Sincronização de remotos ──────────────────────────────────────────────
+        // Interpola suavemente a posição dos GameObjects remotos em direção à
+        // posição autoritativa do servidor (recebida a 20Hz no WorldState).
+        private void SyncRemotePlayers()
+        {
+            if (_world == null) return;
+
+            foreach (var kv in _remotePlayerObjects)
+            {
+                string id = kv.Key;
+                GameObject go = kv.Value;
+                if (go == null) continue;
+                if (!_world.Players.TryGetValue(id, out var data)) continue;
+
+                Vector3 target = GroundSampler.Snap(new Vector3(data.x, 0f, data.z));
+                go.transform.position = Vector3.Lerp(go.transform.position, target, Time.deltaTime * 10f);
+            }
+        }
+
+        // ─── Handler: skill:result ─────────────────────────────────────────────────
+        private void HandleSkillResult(string json)
+        {
+            // Payload: { skillId, rejected?, resolved?, cooldown? }
+            var data = JsonUtility.FromJson<SkillResultData>(json);
+            if (data == null || string.IsNullOrEmpty(data.skillId)) return;
+
+            bool rejected = !string.IsNullOrEmpty(data.rejected);
+            skillBar?.OnSkillResult(data.skillId, rejected, data.cooldown);
+        }
+
+        // ─── Handler: item:picked ──────────────────────────────────────────────────
+        private void HandleItemPicked(string json)
+        {
+            // Payload: { item: { id, type, x, y } }
+            var data = JsonUtility.FromJson<ItemPickedData>(json);
+            if (data?.item == null) return;
+
+            Debug.Log($"[GameManager] Item coletado: {data.item.type}");
+
+            // Feedback flutuante acima do jogador
+            if (_localPlayerGO != null)
+                FloatingText.Spawn(_localPlayerGO.transform.position + Vector3.up * 0.5f,
+                                   $"+ {data.item.type}", Color.white);
+        }
+
+        // ─── Handler: combat:hits ──────────────────────────────────────────────────
+        // Servidor agrega todos os acertos do tick num único array (evita N eventos/frame).
+        private void HandleCombatHits(string json)
+        {
+            var wrapper = JsonUtility.FromJson<CombatHitsWrapper>($"{{\"items\":{json}}}");
+            if (wrapper?.items == null) return;
+
+            foreach (var hit in wrapper.items)
+            {
+                if (hit == null) continue;
+
+                // Texto de dano flutuante na posição do alvo (player ou monstro)
+                Vector3? pos = ResolveEntityPosition(hit.to);
+                if (pos.HasValue)
+                {
+                    Color c = hit.crit ? new Color(1f, 0.5f, 0f) : Color.red;
+                    FloatingText.Spawn(pos.Value + Vector3.up * 0.4f, hit.damage.ToString(), c,
+                                       hit.crit ? 1.3f : 1f);
+                }
+            }
+        }
+
+        // ─── Handler: combat:deaths ────────────────────────────────────────────────
+        private void HandleCombatDeaths(string json)
+        {
+            var wrapper = JsonUtility.FromJson<CombatDeathsWrapper>($"{{\"items\":{json}}}");
+            if (wrapper?.items == null) return;
+
+            foreach (var death in wrapper.items)
+            {
+                if (death == null || string.IsNullOrEmpty(death.id)) continue;
+
+                // Morte de jogador local → tela de respawn
+                if (death.id == _world?.LocalPlayerId)
+                    respawnPanel?.Show();
+            }
+        }
+
+        /// <summary>
+        /// Resolve a posição Unity de uma entidade (jogador remoto, jogador local ou
+        /// monstro) pelo ID, para posicionar texto de dano. Retorna null se desconhecida.
+        /// </summary>
+        private Vector3? ResolveEntityPosition(string entityId)
+        {
+            if (string.IsNullOrEmpty(entityId)) return null;
+
+            if (entityId == _world?.LocalPlayerId && _localPlayerGO != null)
+                return _localPlayerGO.transform.position;
+
+            if (_remotePlayerObjects.TryGetValue(entityId, out var rgo) && rgo != null)
+                return rgo.transform.position;
+
+            if (_world != null && _world.Monsters.TryGetValue(entityId, out var m))
+                return GroundSampler.Snap(new Vector3(m.x, 0f, m.z)) + Vector3.up * 0.5f;
+
+            return null;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // PARTE 2/4 — Estado local completo + painéis de UI
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        // ─── Handlers de estado local (mantêm WorldState.Local atualizado) ─────────
+        private void HandleGearEquipped(string json)       => _world?.HandleGearEquipped(json);
+        private void HandleGearUnequipped(string json)     => _world?.HandleGearUnequipped(json);
+        private void HandleSkillSelectResult(string json)  => _world?.HandleSkillSelectResult(json);
+        private void HandleInventoryUpdated(string json)   => _world?.HandleInventoryUpdated(json);
+        private void HandleRepairResult(string json)       => _world?.HandleRepairResult(json);
+        private void HandleMasteryXp(string json)          => _world?.HandleMasteryXp(json);
+        private void HandleMasteryLevelUp(string json)     => _world?.HandleMasteryLevelUp(json);
+        private void HandleMasteryYellowFame(string json)  => _world?.HandleMasteryYellowFame(json);
+        private void HandleMasteryConvertResult(string json) => _world?.HandleMasteryConvertResult(json);
+
+        // ─── Estruturas de parsing JSON ────────────────────────────────────────────
+
+        [System.Serializable]
+        private class IdExtract { public string id; }
+
+        [System.Serializable]
+        private class PlayerJoinData
+        {
+            public StateData state;
+            public SkillDef[] abilities;
+        }
+
+        [System.Serializable]
+        private class StateData
+        {
+            public string name;
+            public float  x;
+            public float  y;
+            public int    hp;
+            public int    maxHp;
+            public int    mana;
+            public int    maxMana;
+            public int    level;
+            public int    xp;
+            public int    xpMax;
+            public int    gold;
+        }
+
+        [System.Serializable]
+        private class PlayerXpData
+        {
+            public int xp;
+            public int gold;
+            public int totalXp;
+            public int totalGold;
+            public int xpMax;
+        }
+
+        [System.Serializable]
+        private class PlayerLevelUpData
+        {
+            public int level;
+            public int maxHp;
+            public int maxMana;
+            public int speed;
+            public int xp;
+            public int xpMax;
+        }
+
+        [System.Serializable]
+        private class PlayerRevivedData
+        {
+            public int   hp;
+            public float x;
+            public float y;
+        }
+
+        [System.Serializable]
+        private class SkillResultData
+        {
+            public string skillId;
+            public string rejected; // nao-vazio => rejeitado
+            public bool   resolved;
+            public int    cooldown; // ms
+        }
+
+        [System.Serializable]
+        private class ItemPickedData { public PickedItem item; }
+
+        [System.Serializable]
+        private class PickedItem
+        {
+            public string id;
+            public string type;
+            public float  x;
+            public float  y;
+        }
+
+        [System.Serializable]
+        private class CombatHitsWrapper { public CombatHit[] items; }
+
+        [System.Serializable]
+        private class CombatHit
+        {
+            public string from;
+            public string to;
+            public int    damage;
+            public bool   crit;
+            public int    hp;
+            public bool   isMonster;
+        }
+
+        [System.Serializable]
+        private class CombatDeathsWrapper { public CombatDeath[] items; }
+
+        [System.Serializable]
+        private class CombatDeath
+        {
+            public string id;
+            public string killerId;
+        }
+    }
+}
