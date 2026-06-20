@@ -31,7 +31,7 @@ MMORPG/
 ### Managers (lógica de jogo)
 | Arquivo | Responsabilidade |
 |---------|-----------------|
-| `src/managers/PlayerManager.js` | Cria players, valida movimento, colisões, level up, regen. |
+| `src/managers/PlayerManager.js` | Cria players, valida movimento, colisões, level up, regen. Novos: `unequipItem()`, `getGearOptions()`. |
 | `src/managers/CombatEngine.js` | Resolve habilidades (melee, ranged, AoE, heal, buff, teleport). Dano, crit, dodge, shield, DoT. |
 | `src/managers/MonsterManager.js` | Spawn, IA (aggro/leash), ataque, morte, loot. |
 | `src/managers/WorldManager.js` | Estado do mundo: players, monstros, itens. Emite eventos globais. |
@@ -52,16 +52,23 @@ MMORPG/
 
 | Script | Responsabilidade |
 |--------|-----------------|
-| `GameManager.cs` | Orquestrador. Persiste sessionToken. Cria SkillBar e ItemWorldController se não atribuídos. |
+| `GameManager.cs` | Orquestrador. Persiste sessionToken. Cria SkillBar, UIManager e ItemWorldController se não atribuídos. Registra handlers de gear/mastery/inventory. |
 | `StickManBuilder.cs` | Cria stick man proceduralmente (sem assets). `Build(go, color)` + `ClassColor("warrior")`. |
 | `Network/NetworkManager.cs` | WebSocket puro + Socket.IO v4. Sem dependências externas. |
 | `Network/SocketIOParser.cs` | Decodifica Engine.IO v4. Não modificar sem entender o protocolo. |
 | `Player/PlayerController.cs` | Input, envio de player:move, reconciliação de posição. |
 | `Player/CameraController.cs` | Câmera isométrica. |
-| `World/WorldState.cs` | Estado local (players, monstros, **itens**). Deserializa world:update. |
+| `World/WorldState.cs` | Estado local (players, monstros, itens). Deserializa world:update. Mantém `Local` (`LocalFullState`) com equipment, inventory, maestria e gearOptions sincronizados via eventos. Emite `OnLocalStateUpdated`. |
 | `World/MonsterController.cs` | Representação visual dos monstros com barra de HP. |
 | `World/ItemWorldController.cs` | Itens no chão do mundo. Tecla **E** para coletar o mais próximo. |
 | `World/GroundSampler.cs` | Posicionamento correto dos objetos no terreno. |
+| `UI/UIManager.cs` | Singleton. Orquestra os 4 painéis de UI (teclas **P/C/K/I**). Só um painel aberto por vez; Esc fecha todos. |
+| `UI/UIPanelBase.cs` | Classe base para painéis. Cria Canvas proceduralmente e fornece helpers de layout. |
+| `UI/StatusPanel.cs` | Tecla **P** — stats completos: HP/mana/stamina/XP, velocidade, dodge, DR, crafting/gathering skills, maestria ativa. |
+| `UI/PaperDollPanel.cs` | Tecla **C** — slots de equipamento (weapon/chest/head/boots) com maestria, durabilidade e botões Desequipar/Reparar. |
+| `UI/SkillTreePanel.cs` | Tecla **K** — mostra opções de skill por gear equipado (via `gearOptions`). Clique seleciona; emite `skill:select`. |
+| `UI/InventoryPanel.cs` | Tecla **I** — grid 5×6 (30 slots). Clique → detalhes + botões Equipar / Usar / Dropar. |
+| `UI/GearNames.cs` | Tabela estática de nomes legíveis de gear (ex: `"sword"` → `"Espada"`). Sem lógica. |
 | `UI/HUD.cs` | HP, mana, XP, gold, nível, ping. |
 | `UI/SkillBar.cs` | Barra de skills (teclas **1–5**). Cria Canvas proceduralmente. Cooldown visual. |
 | `UI/RespawnPanel.cs` | Tela de morte. Countdown 8s + botão auto-revive. `Show()` / `Hide()` via GameManager. |
@@ -78,10 +85,13 @@ MMORPG/
 | `player:move` | `{ x, y }` | Posição |
 | `skill:use` | `{ skillId, tx, ty }` | Usa habilidade (skillId = id da skill, ex: `skill_slash`) |
 | `gear:equip` | `{ slot, gearId }` | Equipa peça de gear (slot: weapon/chest/head/boots) |
+| `gear:unequip` | `{ slot }` | Desequipa peça do slot; reseta skills associadas |
 | `skill:select` | `{ slotKey, skillId }` | Muda skill de um slot (ex: slotKey=`weapon_Q`) |
 | `repair:item` | `{ slot }` | Repara peça no Ferreiro. `slot` = 'weapon'|'chest'|'head'|'boots'|'all' |
 | `mastery:convert_yellow_fame` | `{ gearId }` | Converte Fama Amarela pendente em nível permanente. Requer proximidade ao Instrutor NPC e ouro suficiente. |
 | `item:pickup` | `{ itemId }` | Pega item do chão |
+| `item:drop` | `{ itemId }` | Descarta item do inventário |
+| `item:use` | `{ itemId }` | Usa item consumível do inventário |
 | `chat:send` | `{ channel, message }` | Mensagem (global ou zone) |
 | `zone:change` | `{ zoneId }` | Troca de zona |
 | `ping_rtt` | `timestamp` | Latência |
@@ -102,7 +112,9 @@ MMORPG/
 | `skill:result` | `{skillId, resolved?} | {skillId, rejected:'reason'}` |
 | `status:applied` | `{type, endsAt}` — status effect aplicado no player local |
 | `gear:equipped` | `{slot, gearId, abilities, ok?}` — confirmação de equipamento |
+| `gear:unequipped` | `{slot, abilities, ok?}` — confirmação de desequipamento |
 | `skill:select_result` | `{slotKey, skillId, abilities, ok?}` — confirmação de seleção |
+| `inventory:updated` | `{inventory:[{id,type}]}` — inventário atual após drop/use/pickup |
 | `mastery:xp` | `{gearId, xp, level, xpMax, yellowFame:{pending,level}}` — XP de maestria recebido |
 | `mastery:levelup` | `{gearId, level, xpMax}` — level up de maestria de equipamento |
 | `mastery:yellow_fame` | `{gearId, pending}` — XP excedente convertido em Fama Amarela pendente (maestria maxed) |
