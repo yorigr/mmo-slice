@@ -76,6 +76,7 @@ class PlayerManager {
       weapon_E: 'skill_execute',
       chest_R:  null,
       head_D:   null,
+      boots_F:  null,
     };
 
     // Durabilidade inicial: todas as peças em 100%
@@ -130,7 +131,7 @@ class PlayerManager {
 
       // Gear-based
       equipment:      starterEquipment,   // { weapon, chest, head, boots }
-      selectedSkills: starterSkills,      // { weapon_Q, weapon_W, weapon_E, chest_R, head_D }
+      selectedSkills: starterSkills,      // { weapon_Q, weapon_W, weapon_E, chest_R, head_D, boots_F }
       durability:     starterDurability,  // { weapon, chest, head, boots } — 0–100 por slot
 
       // Maestria individual por peça de equipamento
@@ -357,12 +358,14 @@ class PlayerManager {
     const weaponOk = (dur.weapon ?? MAX_DURABILITY) > 0;
     const chestOk  = (dur.chest  ?? MAX_DURABILITY) > 0;
     const headOk   = (dur.head   ?? MAX_DURABILITY) > 0;
+    const bootsOk  = (dur.boots  ?? MAX_DURABILITY) > 0;
     return [
       weaponOk ? (s.weapon_Q || null) : null,
       weaponOk ? (s.weapon_W || null) : null,
       weaponOk ? (s.weapon_E || null) : null,
       chestOk  ? (s.chest_R  || null) : null,
       headOk   ? (s.head_D   || null) : null,
+      bootsOk  ? (s.boots_F  || null) : null,
     ];
   }
 
@@ -377,6 +380,7 @@ class PlayerManager {
     if (weaponSkills.includes(skillId)) return (dur.weapon ?? MAX_DURABILITY) > 0;
     if (s.chest_R === skillId) return (dur.chest ?? MAX_DURABILITY) > 0;
     if (s.head_D  === skillId) return (dur.head  ?? MAX_DURABILITY) > 0;
+    if (s.boots_F === skillId) return (dur.boots ?? MAX_DURABILITY) > 0;
     return false;
   }
 
@@ -479,7 +483,7 @@ class PlayerManager {
       weapon: ['weapon_Q', 'weapon_W', 'weapon_E'],
       chest:  ['chest_R'],
       head:   ['head_D'],
-      boots:  [],
+      boots:  ['boots_F'],
     };
 
     // Processa cada peca de equipment individualmente
@@ -598,7 +602,7 @@ class PlayerManager {
       player.selectedSkills.weapon_W = wDef.slots.W.options[0];
       player.selectedSkills.weapon_E = wDef.slots.E.options[0];
     } else {
-      const armorSlotMap = { chest: 'chest_R', head: 'head_D' };
+      const armorSlotMap = { chest: 'chest_R', head: 'head_D', boots: 'boots_F' };
       if (!GEAR.armors[gearId]) return { error: 'unknown_armor' };
       const aDef = GEAR.armors[gearId];
       if (aDef.slot !== slot) return { error: 'wrong_slot' };
@@ -615,9 +619,56 @@ class PlayerManager {
     return { ok: true };
   }
 
+  // Desequipa a peca de gear de um slot e reseta a(s) skill(s) associada(s).
+  // Limpa equipment[slot], zera as selectedSkills do slot e recalcula stats.
+  unequipItem(player, slot) {
+    const validSlots = ['weapon', 'chest', 'head', 'boots'];
+    if (!validSlots.includes(slot)) return { error: 'invalid_slot' };
+
+    player.equipment[slot] = null;
+
+    if (slot === 'weapon') {
+      player.selectedSkills.weapon_Q = null;
+      player.selectedSkills.weapon_W = null;
+      player.selectedSkills.weapon_E = null;
+    } else {
+      const armorSlotMap = { chest: 'chest_R', head: 'head_D', boots: 'boots_F' };
+      const skillSlot = armorSlotMap[slot];
+      if (skillSlot) player.selectedSkills[skillSlot] = null;
+    }
+
+    // Recalcula stats (peca removida deixa de contribuir)
+    this._recalcStats(player);
+    return { ok: true };
+  }
+
+  // Retorna as opcoes de skill por peca de gear equipada.
+  // Para a arma: { [gearId]: { Q:[...], W:[...], E:[...] } }
+  // Para armaduras: { [gearId]: { R|D|F: [...] } }
+  // Usado pelo painel de habilidades (Skill Tree) no cliente.
+  getGearOptions(player) {
+    const opts = {};
+    for (const [slot, gearId] of Object.entries(player.equipment)) {
+      if (!gearId) continue;
+      const def = slot === 'weapon' ? GEAR.weapons[gearId] : GEAR.armors[gearId];
+      if (!def) continue;
+      if (slot === 'weapon') {
+        opts[gearId] = {
+          Q: def.slots?.Q?.options || [],
+          W: def.slots?.W?.options || [],
+          E: def.slots?.E?.options || [],
+        };
+      } else {
+        const slotKey = { chest: 'R', head: 'D', boots: 'F' }[slot];
+        opts[gearId] = { [slotKey]: def.skill?.options || [] };
+      }
+    }
+    return opts;
+  }
+
   // Altera a skill selecionada em um slot.
   selectSkill(player, slotKey, skillId) {
-    const validSlots = ['weapon_Q', 'weapon_W', 'weapon_E', 'chest_R', 'head_D'];
+    const validSlots = ['weapon_Q', 'weapon_W', 'weapon_E', 'chest_R', 'head_D', 'boots_F'];
     if (!validSlots.includes(slotKey)) return { error: 'invalid_slot' };
 
     const weaponId = player.equipment?.weapon;
@@ -628,7 +679,7 @@ class PlayerManager {
       if (!wDef || !wDef.slots[slotName]?.options.includes(skillId))
         return { error: 'skill_not_available' };
     } else {
-      const armorMap = { R: 'chest', D: 'head' };
+      const armorMap = { R: 'chest', D: 'head', F: 'boots' };
       const armorId  = player.equipment?.[armorMap[slotName]];
       const aDef     = armorId ? GEAR.armors[armorId] : null;
       if (!aDef || !aDef.skill?.options.includes(skillId))
@@ -697,12 +748,6 @@ class PlayerManager {
       }
     }
     p.x = Math.max(PLAYER_RADIUS, Math.min(MAP_W - PLAYER_RADIUS, p.x));
-    p.y = Math.max(PLAYER_RADIUS, Math.min(MAP_H - PLAYER_RADIUS, p.y));
-  }
-}
-
-module.exports = PlayerManager;
-ath.max(PLAYER_RADIUS, Math.min(MAP_W - PLAYER_RADIUS, p.x));
     p.y = Math.max(PLAYER_RADIUS, Math.min(MAP_H - PLAYER_RADIUS, p.y));
   }
 }
