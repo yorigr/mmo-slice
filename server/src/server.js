@@ -110,6 +110,8 @@ io.on('connection', (socket) => {
       abilities:    zone.combat.getPlayerAbilities(state),
       // npcs: lista de NPCs estáticos da zona (posição + tipo para o cliente renderizar)
       npcs:         STATIC_NPCS,
+      // gearOptions: opções de skill por peça equipada (para o painel de habilidades)
+      gearOptions:  zone.players.getGearOptions(state),
       state,
     });
 
@@ -208,6 +210,7 @@ io.on('connection', (socket) => {
       world:        { w: MAP_W, h: MAP_H },
       abilities:    newZone.combat.getPlayerAbilities(state),
       npcs:         STATIC_NPCS,
+      gearOptions:  newZone.players.getGearOptions(state),
       state,
     });
 
@@ -224,6 +227,42 @@ io.on('connection', (socket) => {
     if (!p || p.dead) return;
     const result = zone.players.equipItem(p, slot, gearId);
     socket.emit('gear:equipped', { slot, gearId, abilities: zone.combat.getPlayerAbilities(p), ...result });
+  });
+
+  // ── gear:unequip ─────────────────────────────────────────────────────────────
+  // Payload: { slot: 'weapon'|'chest'|'head'|'boots' }
+  // Remove a peça de gear do slot e reseta a(s) skill(s) associada(s).
+  socket.on('gear:unequip', ({ slot } = {}) => {
+    const zone = zones.getZone(socket.id);
+    if (!zone) return;
+    const p = zone.world.getPlayer(socket.id);
+    if (!p || p.dead) return;
+    const result = zone.players.unequipItem(p, slot);
+    socket.emit('gear:unequipped', { slot, abilities: zone.combat.getPlayerAbilities(p), ...result });
+  });
+
+  // ── item:drop ────────────────────────────────────────────────────────────────
+  // Payload: { itemId } — remove o item do inventário (descartado no mundo / perdido).
+  socket.on('item:drop', ({ itemId } = {}) => {
+    const zone = zones.getZone(socket.id);
+    if (!zone) return;
+    const p = zone.world.getPlayer(socket.id);
+    if (!p) return;
+    const before = p.inventory.length;
+    p.inventory = p.inventory.filter(i => i.id !== itemId);
+    socket.emit('inventory:updated', { inventory: p.inventory, removed: before !== p.inventory.length });
+  });
+
+  // ── item:use ─────────────────────────────────────────────────────────────────
+  // Payload: { itemId } — usa um consumível. Por ora apenas remove do inventário
+  // (efeito de poção será implementado quando consumíveis forem definidos).
+  socket.on('item:use', ({ itemId } = {}) => {
+    const zone = zones.getZone(socket.id);
+    if (!zone) return;
+    const p = zone.world.getPlayer(socket.id);
+    if (!p) return;
+    p.inventory = p.inventory.filter(i => i.id !== itemId);
+    socket.emit('inventory:updated', { inventory: p.inventory });
   });
 
   // ── skill:select ─────────────────────────────────────────────────────────────
