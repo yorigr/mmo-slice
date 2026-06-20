@@ -977,45 +977,29 @@
     "name": "Esquiva Rolante",
     "type": "teleport",
     "castTime": 0,
-    "cooldown": 8000,
+    "cooldown": 12000,
     "mana": 0,
-    "stamina": 15,
+    "stamina": 20,
     "range": 120,
     "damage": 0,
     "statusEffect": "ccImmune",
     "statusDuration": 500,
-    "description": "Blink curto 120px + CC immune 0.5s."
-  },
-
-  "skill_charge": {
-    "id": "skill_charge",
-    "name": "Investida de Placa",
-    "type": "melee_charge",
-    "castTime": 0,
-    "cooldown": 12000,
-    "mana": 0,
-    "stamina": 30,
-    "range": 300,
-    "damage": 22,
-    "statusEffect": "stun",
-    "statusDuration": 1000,
-    "description": "Arremete ao alvo. Stun 1s ao impactar."
+    "description": "Dash de 120px + CC immune 0.5s. Esquiva ágil de couro."
   },
 
   "skill_heavy_step": {
     "id": "skill_heavy_step",
     "name": "Passo Pesado",
-    "type": "ranged_aoe",
+    "type": "buff_self",
     "castTime": 0,
-    "cooldown": 10000,
+    "cooldown": 25000,
     "mana": 0,
-    "stamina": 20,
+    "stamina": 25,
     "range": 0,
-    "aoeRadius": 90,
-    "damage": 8,
-    "statusEffect": "slow",
-    "statusFactor": 0.4,
+    "damage": 0,
+    "statusEffect": "ccImmune",
     "statusDuration": 3000,
-    "description": "Pisada poderosa. Slow 40% em todos ao redor."
+    "duration": 3000,
+    "description": "Plate boots: lentas mas inabaláveis. Imune a CC/knockback por 3s."
   }
 }
