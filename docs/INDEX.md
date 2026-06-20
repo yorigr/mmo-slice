@@ -79,6 +79,8 @@ MMORPG/
 | `skill:use` | `{ skillId, tx, ty }` | Usa habilidade (skillId = id da skill, ex: `skill_slash`) |
 | `gear:equip` | `{ slot, gearId }` | Equipa peça de gear (slot: weapon/chest/head/boots) |
 | `skill:select` | `{ slotKey, skillId }` | Muda skill de um slot (ex: slotKey=`weapon_Q`) |
+| `repair:item` | `{ slot }` | Repara peça no Ferreiro. `slot` = 'weapon'|'chest'|'head'|'boots'|'all' |
+| `mastery:convert_yellow_fame` | `{ gearId }` | Converte Fama Amarela pendente em nível permanente. Requer proximidade ao Instrutor NPC e ouro suficiente. |
 | `item:pickup` | `{ itemId }` | Pega item do chão |
 | `chat:send` | `{ channel, message }` | Mensagem (global ou zone) |
 | `zone:change` | `{ zoneId }` | Troca de zona |
@@ -87,7 +89,7 @@ MMORPG/
 ### Servidor → Cliente
 | Evento | Descrição |
 |--------|-----------|
-| `player:joined` | Confirmação, abilities (array da classe), sessionToken, state |
+| `player:joined` | Confirmação. Campos: `id, sessionToken, world:{w,h}, abilities, npcs:[{id,type,name,x,y}], state`. `npcs` inclui Ferreiro Aldric e Instrutor Magnus. |
 | `world:update` | Snapshot a 20Hz — players, monsters, **items** |
 | `combat:hits` | Array de hits por tick `[{from,to,damage,crit,hp}]` |
 | `combat:deaths` | Array de mortes por tick `[{id,killerId}]` |
@@ -95,15 +97,47 @@ MMORPG/
 | `player:levelup` | `{level, maxHp, maxMana, speed, xp, xpMax}` |
 | `player:xp` | `{xp, gold, totalXp, totalGold, xpMax}` |
 | `player:revived` | `{hp, x, y}` — ressuscitado (auto ou por aliado) |
+| `player:death_loot` | `{destroyed:[{slot,gearId}], dropped:[{slot,gearId,itemId}], kept:[{slot,gearId}]}` — itens destruídos/dropados na morte |
+| `repair:result` | `{ok,totalCost,repairs:[{slot,gearId,fromDurability,cost}],gold}` ou `{error}` — resultado do reparo |
 | `skill:result` | `{skillId, resolved?} | {skillId, rejected:'reason'}` |
 | `status:applied` | `{type, endsAt}` — status effect aplicado no player local |
 | `gear:equipped` | `{slot, gearId, abilities, ok?}` — confirmação de equipamento |
 | `skill:select_result` | `{slotKey, skillId, abilities, ok?}` — confirmação de seleção |
+| `mastery:xp` | `{gearId, xp, level, xpMax, yellowFame:{pending,level}}` — XP de maestria recebido |
+| `mastery:levelup` | `{gearId, level, xpMax}` — level up de maestria de equipamento |
+| `mastery:yellow_fame` | `{gearId, pending}` — XP excedente convertido em Fama Amarela pendente (maestria maxed) |
+| `mastery:convert_result` | `{ok, gearId, yellowFameLevel, gold, goldSpent, pending, nextXpNeeded, nextGoldCost}` ou `{error}` — resultado da conversão de Fama Amarela |
 | `item:picked` | Item coletado com sucesso `{item:{id,type,...}}` |
 | `chat:message` | `{channel, from, message, ts}` |
 | `pong_rtt` | Resposta de latência (timestamp espelhado) |
 
 ---
+
+## Fluxo: maestria de equipamento
+
+```
+Armas — XP por skill resolvida (MASTERY_XP_PER_USE = 10):
+  CombatEngine._resolveAbility() → MASTERY_SKILL_TYPES.has(sk.type)
+    → PlayerManager.gainMasteryXp(player, weaponId, 10)
+
+Armaduras — XP por hit absorvido (MASTERY_XP_PER_HIT = 3):
+  CombatEngine.applyDamage() → peça aleatória perde 1 dur
+    → PlayerManager.gainMasteryXp(player, armorId, 3)
+
+Bônus por nível (aplicado via _recalcStats):
+  Arma:    +2% dano por nível (+5% por nível de Fama Amarela)
+  Cloth:   +2 maxMana por nível (+3 por Fama Amarela)
+  Leather: +0.3% dodge por nível (+0.5% por Fama Amarela)
+  Plate:   +0.2% damageReduction por nível (+0.3% por Fama Amarela)
+
+Fama Amarela (pós-maestria máxima nível 10):
+  XP excedente → yellowFame.pending
+  Conversão: player próximo ao Instrutor Magnus (TRAINER_RANGE = 120px)
+    → mastery:convert_yellow_fame { gearId }
+    → Valida: pending >= YELLOW_FAME_XP_TABLE[level], gold >= YELLOW_FAME_GOLD_TABLE[level]
+    → Debita ouro, incrementa yellowFame.level (máx 5)
+    → Total gasto por peça: 41.000 gold (sink progressivo)
+```
 
 ## Fluxo: skill ponta a ponta
 
@@ -130,6 +164,40 @@ CombatEngine → monster.hp <= 0
 
 ---
 
+## Fluxo: durabilidade
+
+```
+Por hit recebido (CombatEngine.applyDamage):
+  → peça de armadura aleatória perde DURABILITY_LOSS_PER_HIT (1 ponto)
+  → item com dur=0: não fornece stats nem skills
+
+Por morte (PlayerManager.handlePlayerDeath):
+  → itens destruídos/dropados → slot.durability = 0
+  → itens mantidos (kept) → durability[slot] -= DURABILITY_DEATH_PENALTY (30 pts)
+
+Reparo no Ferreiro (repair:item):
+  → player dentro de BLACKSMITH_RANGE (120px) do Ferreiro
+  → custo = REPAIR_BASE_VALUES[gearId] × (1 - dur/100) × REPAIR_COST_RATE (0.15)
+  → gold debitado, durability restaurada a 100
+```
+
+## Fluxo: morte de player → destruição de itens
+
+```
+CombatEngine.applyDamage() → target.hp <= 0
+  → target.dead = true
+  → PlayerManager.handlePlayerDeath(target, world.zoneType)
+      → Para cada peça equipada:
+          roll < taxa → destruído (slot = null, skills resetadas)
+          canLoot     → dropado no mundo (world.addItem)
+          else        → mantido (yellow zone)
+      → Inventário: -10% de materiais
+  → world.io.to(target.id).emit('player:death_loot', { destroyed, dropped, kept })
+  → PlayerManager.scheduleRespawn(target)  → ressuscita em RESPAWN_MS (3s)
+```
+
+---
+
 ## Como balancear
 
 1. HP/velocidade/regen → `constants.js`
@@ -137,6 +205,8 @@ CombatEngine → monster.hp <= 0
 3. Monstros (HP, XP, loot) → `MONSTER_TYPES` em `MonsterManager.js`
 4. Items → `items.json`
 5. Curva XP → `xpNeededForLevel()` em `PlayerManager.js` (padrão: `100 * level^1.5`)
+6. Maestria → `MASTERY_XP_TABLE`, `MASTERY_*_PER_LEVEL` em `constants.js`
+7. Fama Amarela → `YELLOW_FAME_XP_TABLE`, `YELLOW_FAME_GOLD_TABLE` em `constants.js`
 
 ---
 
