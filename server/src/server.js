@@ -19,7 +19,7 @@ const cors            = require('cors');
 const path            = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-const { PORT, MAP_W, MAP_H, BLACKSMITH_X, BLACKSMITH_Y, BLACKSMITH_RANGE } = require('./config/constants');
+const { PORT, MAP_W, MAP_H, BLACKSMITH_X, BLACKSMITH_Y, BLACKSMITH_RANGE, TRAINER_X, TRAINER_Y, TRAINER_RANGE } = require('./config/constants');
 const { ZoneManager }        = require('./managers/ZoneManager');
 const SessionManager         = require('./managers/SessionManager');
 
@@ -27,6 +27,8 @@ const SessionManager         = require('./managers/SessionManager');
 // Enviados ao cliente via player:joined para renderização e detecção de proximidade.
 const STATIC_NPCS = [
   { id: 'blacksmith_1', type: 'blacksmith', name: 'Ferreiro Aldric', x: BLACKSMITH_X, y: BLACKSMITH_Y },
+  // Instrutor: NPC que converte Fama Amarela pendente em bônus permanentes (cobra ouro).
+  { id: 'trainer_1',    type: 'trainer',    name: 'Instrutor Magnus', x: TRAINER_X,    y: TRAINER_Y    },
 ];
 
 // ----- App -----
@@ -235,6 +237,27 @@ io.on('connection', (socket) => {
     if (p.casting) { socket.emit('skill:select_result', { error: 'in_combat' }); return; }
     const result = zone.players.selectSkill(p, slotKey, skillId);
     socket.emit('skill:select_result', { slotKey, skillId, abilities: zone.combat.getPlayerAbilities(p), ...result });
+  });
+
+  // ── mastery:convert_yellow_fame ──────────────────────────────────────────────
+  // Converte Fama Amarela pendente em nível permanente, cobrando ouro.
+  // O player deve estar próximo do Instrutor NPC.
+  // Payload: { gearId: string }  — ID do equipamento (ex: 'sword', 'cloth_chest')
+  socket.on('mastery:convert_yellow_fame', ({ gearId } = {}) => {
+    const zone = zones.getZone(socket.id);
+    if (!zone) return;
+    const p = zone.world.getPlayer(socket.id);
+    if (!p || p.dead) return;
+
+    // Valida proximidade ao Instrutor
+    const dist = Math.hypot(p.x - TRAINER_X, p.y - TRAINER_Y);
+    if (dist > TRAINER_RANGE) {
+      socket.emit('mastery:convert_result', { error: 'too_far', dist: Math.round(dist) });
+      return;
+    }
+
+    const result = zone.players.convertYellowFame(p, gearId);
+    socket.emit('mastery:convert_result', result);
   });
 
   // ── repair:item ──────────────────────────────────────────────────────────────
