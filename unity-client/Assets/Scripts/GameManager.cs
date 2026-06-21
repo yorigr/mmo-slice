@@ -383,30 +383,31 @@ namespace MMORPG
             if (_localPlayerCtrl == null)
                 Debug.LogError("[GameManager] PlayerController não encontrado no playerPrefab!");
 
-            // CharacterController — necessário para colisão com árvores/rochas/muros.
+            // Constrói o visual do personagem. CharacterBuilder tenta o FBX primeiro;
+            // retorna a altura real do personagem (FBX ~1.85u, StickMan ~1.05u).
+            string gender    = CharacterBuilder.ClassToGender(playerClass);
+            float charHeight = CharacterBuilder.Build(_localPlayerGO, StickManBuilder.ClassColor(playerClass), gender);
+
+            // CharacterController — dimensões baseadas na altura real do personagem.
             // Adicionado em runtime para não depender do prefab estar configurado.
-            // Dimensões: altura 1.1u (tronco+cabeça), raio 0.25u, centro em 0.55u do chão.
             if (_localPlayerGO.GetComponent<CharacterController>() == null)
             {
                 var cc = _localPlayerGO.AddComponent<CharacterController>();
-                cc.height        = 1.1f;
-                cc.radius        = 0.25f;
-                cc.center        = new Vector3(0f, 0.55f, 0f);
-                cc.slopeLimit    = 45f;
-                cc.stepOffset    = 0.3f;
+                cc.height          = charHeight * 0.9f;   // ligeiramente menor que o mesh
+                cc.radius          = charHeight * 0.15f;
+                cc.center          = new Vector3(0f, charHeight * 0.45f, 0f);
+                cc.slopeLimit      = 45f;
+                cc.stepOffset      = 0.3f;
                 cc.minMoveDistance = 0f;
             }
 
-            // Constrói o visual stick man para o jogador local
-            StickManBuilder.Build(_localPlayerGO, StickManBuilder.ClassColor(playerClass));
-
-            // Animação procedural de walking (braços/pernas oscilam via Mathf.Sin)
+            // Animação procedural de walking — PlayerAnimator detecta bones StickMan ou FBX
             if (_localPlayerGO.GetComponent<PlayerAnimator>() == null)
                 _localPlayerGO.AddComponent<PlayerAnimator>();
 
-            // Nome tag acima da cabeça (branco = jogador local)
+            // Nome tag acima da cabeça — altura ajustada para o personagem real
             string spawnNameForTag = !string.IsNullOrEmpty(stateData?.name) ? stateData.name : playerName;
-            PlayerNameTag.Attach(_localPlayerGO, spawnNameForTag, Color.white);
+            PlayerNameTag.Attach(_localPlayerGO, spawnNameForTag, Color.white, charHeight);
 
             // Informa o ItemWorldController sobre o jogador local (para distância de pickup)
             itemController?.SetLocalPlayer(_localPlayerGO.transform);
@@ -528,11 +529,12 @@ namespace MMORPG
             var go = Instantiate(remotePlayerPrefab, pos, Quaternion.identity);
             go.name = $"RemotePlayer_{playerData.name}";
 
-            // Constrói stick man com a cor da classe do remoto
-            StickManBuilder.Build(go, StickManBuilder.ClassColor(playerData.className));
+            // Constrói visual do remoto com FBX (ou StickMan como fallback)
+            string remoteGender = CharacterBuilder.ClassToGender(playerData.className);
+            float  remoteHeight = CharacterBuilder.Build(go, StickManBuilder.ClassColor(playerData.className), remoteGender);
 
-            // Nome tag na cor da classe (distingue remotos por classe)
-            PlayerNameTag.Attach(go, playerData.name, StickManBuilder.ClassColor(playerData.className));
+            // Nome tag na cor da classe — altura ajustada para o modelo real
+            PlayerNameTag.Attach(go, playerData.name, StickManBuilder.ClassColor(playerData.className), remoteHeight);
 
             _remotePlayerObjects[playerId] = go;
             Debug.Log($"[GameManager] Jogador remoto spawnado: {playerData.name} ({playerId})");
