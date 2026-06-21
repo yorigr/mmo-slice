@@ -146,24 +146,42 @@ namespace MMORPG.Network
         // ─── Conexão ──────────────────────────────────────────────────────────────
         private async Task OpenWebSocket()
         {
-            // Cancela e descarta conexão anterior
-            _cts?.Cancel();
-            if (_ws != null)
+            // Cancela e descarta conexão anterior.
+            // IMPORTANTE: capturamos _cts e _ws ANTES de substituí-los para que
+            // o ReceiveLoop antigo (que usa os mesmos snapshots) saiba que foi
+            // cancelado intencionalmente e não inicie um novo ciclo de reconexão.
+            var oldCts = _cts;
+            var oldWs  = _ws;
+
+            // Sinaliza cancelamento ANTES de abortar o socket, para que o ReceiveLoop
+            // que está em ReceiveAsync possa capturar OperationCanceledException.
+            oldCts?.Cancel();
+
+            // Aguarda um frame para dar chance ao ReceiveLoop de processar o cancelamento
+            // antes do Abort() mudar o estado do socket de forma abrupta.
+            await Task.Delay(10);
+
+            if (oldWs != null)
             {
-                try { _ws.Abort(); } catch { /* ok */ }
-                _ws.Dispose();
+                try { oldWs.Abort(); } catch { /* ok */ }
+                oldWs.Dispose();
             }
 
             _cts = new CancellationTokenSource();
             _ws  = new ClientWebSocket();
 
+            // Snapshot local: cada chamada a OpenWebSocket captura suas próprias referências,
+            // impedindo que um ReceiveLoop stale acesse o ws ou cts desta conexão.
+            var thisCts = _cts;
+            var thisWs  = _ws;
+
             Debug.Log($"[NetworkManager] Conectando em {serverUrl}...");
 
             try
             {
-                await _ws.ConnectAsync(new Uri(serverUrl), _cts.Token);
+                await thisWs.ConnectAsync(new Uri(serverUrl), thisCts.Token);
                 _mainThreadQueue.Enqueue(HandleOpen);
-                _ = ReceiveLoop();
+                _ = ReceiveLoop(thisWs, thisCts);
             }
             catch (OperationCanceledException) { /* shutdown intencional */ }
             catch (Exception ex)
@@ -173,21 +191,27 @@ namespace MMORPG.Network
             }
         }
 
-        private async Task ReceiveLoop()
+        /// <summary>
+        /// Loop de recepção WebSocket. Recebe ws e cts como parâmetros para que
+        /// cada chamada opere sobre suas próprias referências — evita que um loop
+        /// stale de reconexão anterior acesse o socket/token da nova conexão.
+        /// </summary>
+        private async Task ReceiveLoop(ClientWebSocket ws, CancellationTokenSource cts)
         {
             var buffer = new byte[8192];
             var sb     = new StringBuilder();
+            var token  = cts.Token;
 
             try
             {
-                while (_ws.State == WebSocketState.Open && !_cts.IsCancellationRequested)
+                while (ws.State == WebSocketState.Open && !token.IsCancellationRequested)
                 {
                     sb.Clear();
                     WebSocketReceiveResult result;
 
                     do
                     {
-                        result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
+                        result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), token);
 
                         if (result.MessageType == WebSocketMessageType.Close)
                         {
@@ -204,11 +228,16 @@ namespace MMORPG.Network
                         _messageQueue.Enqueue(raw);
                 }
             }
-            catch (OperationCanceledException) { /* shutdown intencional */ }
+            catch (OperationCanceledException) { /* shutdown intencional — não reconectar */ }
             catch (Exception ex)
             {
-                Debug.LogError($"[NetworkManager] ReceiveLoop erro: {ex.Message}");
-                _mainThreadQueue.Enqueue(HandleCloseFromServer);
+                // Só notifica como erro se o token NÃO foi cancelado intencionalmente.
+                // Isso evita que o Abort() no OpenWebSocket dispare um ciclo extra de reconexão.
+                if (!token.IsCancellationRequested)
+                {
+                    Debug.LogError($"[NetworkManager] ReceiveLoop erro: {ex.Message}");
+                    _mainThreadQueue.Enqueue(HandleCloseFromServer);
+                }
             }
         }
 
@@ -242,6 +271,12 @@ namespace MMORPG.Network
 
             switch (msg.Type)
             {
+                case SocketIOMessageType.EngineOpen:
+                    // "0{...}" — Engine.IO handshake recebido. Cliente DEVE responder com "40"
+                    // para solicitar conexão ao namespace Socket.IO padrão "/".
+                    SendRaw(SocketIOParser.NamespaceConnectMessage);
+                    break;
+
                 case SocketIOMessageType.Connect:
                     // "40" — Socket.IO confirmou a sessão. Seguro emitir agora.
                     _reconnectAttempt = 0;
