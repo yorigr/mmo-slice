@@ -1,21 +1,20 @@
 // StickManBuilder.cs
-// Cria um stick man proceduralmente usando primitivos Unity.
+// Constrói um personagem low-poly estilo Albion Online usando primitivos Unity.
 // Sem dependência de assets externos — funciona em qualquer cena.
 //
 // Hierarquia gerada como filhos do GameObject alvo:
 //   Root
-//   ├── Head  (Sphere)
-//   ├── Body  (Cylinder vertical)
-//   ├── ArmL  (Cylinder horizontal, rotacionado 90° Z)
-//   ├── ArmR  (idem, lado oposto)
-//   ├── LegL  (Cylinder vertical, deslocado -X)
-//   └── LegR  (idem, +X)
+//   ├── Body         (Cube largo — tronco com armadura)
+//   ├── Head         (Cube — capacete low-poly)
+//   ├── Visor        (Cube fino — rosto/viseira)
+//   ├── ShoulderL/R  (Cubes — ombreiras/pauldrons)
+//   ├── ArmL/R       (Cylinders — braços)
+//   ├── HandL/R      (Spheres — mãos)
+//   ├── LegL/R       (Cylinders — pernas)
+//   └── Weapon       (Cube longo — arma genérica)
 //
-// Uso:
-//   StickManBuilder.Build(gameObject, Color.red);
-//   — limpa filhos anteriores e reconstrói o stick man com a cor dada.
-//
-//   StickManBuilder.ClassColor("warrior") → cor padrão por classe.
+// Estilo "blocky" intencional — mesmo visual que o Albion Online usa em protótipos.
+// Quando assets reais forem integrados, este builder será removido.
 
 using UnityEngine;
 
@@ -23,125 +22,121 @@ namespace MMORPG
 {
     public static class StickManBuilder
     {
-        // ─── Dimensões (em unidades Unity) ───────────────────────────────────────
-        private const float HeadRadius  = 0.18f;
-        private const float BodyHeight  = 0.45f;
-        private const float BodyRadius  = 0.07f;
-        private const float LimbRadius  = 0.05f;
-        private const float ArmLength   = 0.32f;
-        private const float LegLength   = 0.38f;
+        // Proporções em unidades Unity
+        private const float BodyW  = 0.38f;
+        private const float BodyD  = 0.22f;
+        private const float BodyH  = 0.52f;
+        private const float HeadW  = 0.30f;
+        private const float HeadH  = 0.28f;
+        private const float HeadD  = 0.26f;
+        private const float ArmR   = 0.075f;
+        private const float ArmH   = 0.30f;
+        private const float LegR   = 0.09f;
+        private const float LegH   = 0.38f;
+        private const float PadW   = 0.14f;
+        private const float PadH   = 0.10f;
 
-        // Posições Y — base Y=0 é o chão (pé do personagem)
-        private static float BodyBotY   => 0f;
-        private static float BodyTopY   => BodyBotY + BodyHeight;
-        private static float BodyMidY   => (BodyBotY + BodyTopY) * 0.5f;
-        private static float HeadCenterY=> BodyTopY + HeadRadius + 0.02f;
+        // Y relativo ao chão (y=0 = pés)
+        private static float LegMidY    => LegH * 0.5f;
+        private static float BodyBotY   => LegH;
+        private static float BodyMidY   => BodyBotY + BodyH * 0.5f;
+        private static float BodyTopY   => BodyBotY + BodyH;
         private static float ShoulderY  => BodyTopY - 0.04f;
-        private static float HipY       => BodyBotY + 0.05f;
+        private static float HeadMidY   => BodyTopY + 0.02f + HeadH * 0.5f;
+        private static float ArmMidY    => ShoulderY - ArmH * 0.5f - PadH * 0.4f;
 
         // ─── API Pública ──────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Constrói o stick man como filhos de <paramref name="parent"/>.
-        /// Remove todos os filhos existentes antes de construir.
-        /// </summary>
-        public static void Build(GameObject parent, Color color)
+        public static void Build(GameObject parent, Color armorColor)
         {
             if (parent == null) return;
 
-            // Remove filhos anteriores (ex: esfera placeholder do prefab)
             for (int i = parent.transform.childCount - 1; i >= 0; i--)
                 Object.Destroy(parent.transform.GetChild(i).gameObject);
 
-            // Material compartilhado entre todos os membros
-            Material mat = CreateMaterial(color);
+            Material matArmor = Mat(armorColor);
+            Material matSkin  = Mat(new Color(0.82f, 0.70f, 0.58f));
+            Material matDark  = Mat(Color.Lerp(armorColor, Color.black, 0.45f));
+            Material matMetal = Mat(new Color(0.62f, 0.62f, 0.65f));
 
-            // Cabeça
-            AddPart(parent, "Head", PrimitiveType.Sphere, mat,
-                pos:   new Vector3(0f, HeadCenterY, 0f),
-                scale: Vector3.one * HeadRadius * 2f);
+            float legX = LegR * 1.3f;
+            Cyl(parent, "LegL",  matDark,  new Vector3(-legX, LegMidY, 0f), new Vector3(LegR*2, LegH*0.5f, LegR*2));
+            Cyl(parent, "LegR",  matDark,  new Vector3( legX, LegMidY, 0f), new Vector3(LegR*2, LegH*0.5f, LegR*2));
 
-            // Corpo (Cylinder Unity = altura total 2u, então dividimos por 2)
-            AddPart(parent, "Body", PrimitiveType.Cylinder, mat,
-                pos:   new Vector3(0f, BodyMidY, 0f),
-                scale: new Vector3(BodyRadius * 2f, BodyHeight * 0.5f, BodyRadius * 2f));
+            Cube(parent, "Body", matArmor, new Vector3(0f, BodyMidY, 0f), new Vector3(BodyW, BodyH, BodyD));
+            Cube(parent, "Head", matArmor, new Vector3(0f, HeadMidY, 0f), new Vector3(HeadW, HeadH, HeadD));
+            Cube(parent, "Visor", matDark, new Vector3(0f, HeadMidY, -(HeadD*0.5f+0.005f)), new Vector3(HeadW*0.7f, HeadH*0.35f, 0.04f));
 
-            // Braços (Cylinder rotacionado 90° no Z para ficar horizontal)
-            AddPart(parent, "ArmL", PrimitiveType.Cylinder, mat,
-                pos:   new Vector3(-(ArmLength * 0.5f + BodyRadius), ShoulderY, 0f),
-                scale: new Vector3(LimbRadius * 2f, ArmLength * 0.5f, LimbRadius * 2f),
-                rot:   Quaternion.Euler(0f, 0f, 90f));
+            float padX = BodyW * 0.5f + PadW * 0.5f;
+            Cube(parent, "ShoulderL", matMetal, new Vector3(-padX, ShoulderY, 0f), new Vector3(PadW, PadH, BodyD*0.9f));
+            Cube(parent, "ShoulderR", matMetal, new Vector3( padX, ShoulderY, 0f), new Vector3(PadW, PadH, BodyD*0.9f));
 
-            AddPart(parent, "ArmR", PrimitiveType.Cylinder, mat,
-                pos:   new Vector3(ArmLength * 0.5f + BodyRadius, ShoulderY, 0f),
-                scale: new Vector3(LimbRadius * 2f, ArmLength * 0.5f, LimbRadius * 2f),
-                rot:   Quaternion.Euler(0f, 0f, 90f));
+            float armX = padX + PadW*0.5f + ArmR;
+            Cyl(parent, "ArmL",  matArmor, new Vector3(-armX, ArmMidY, 0f), new Vector3(ArmR*2, ArmH*0.5f, ArmR*2));
+            Cyl(parent, "ArmR",  matArmor, new Vector3( armX, ArmMidY, 0f), new Vector3(ArmR*2, ArmH*0.5f, ArmR*2));
 
-            // Pernas
-            float legOffsetX = LimbRadius * 2.5f;
-            float legMidY    = HipY - LegLength * 0.5f;
+            float handY = ArmMidY - ArmH * 0.5f - 0.04f;
+            Sph(parent, "HandL", matSkin, new Vector3(-armX, handY, 0f), Vector3.one * 0.09f);
+            Sph(parent, "HandR", matSkin, new Vector3( armX, handY, 0f), Vector3.one * 0.09f);
 
-            AddPart(parent, "LegL", PrimitiveType.Cylinder, mat,
-                pos:   new Vector3(-legOffsetX, legMidY, 0f),
-                scale: new Vector3(LimbRadius * 2f, LegLength * 0.5f, LimbRadius * 2f));
-
-            AddPart(parent, "LegR", PrimitiveType.Cylinder, mat,
-                pos:   new Vector3(legOffsetX, legMidY, 0f),
-                scale: new Vector3(LimbRadius * 2f, LegLength * 0.5f, LimbRadius * 2f));
+            Cube(parent, "Weapon", matMetal,
+                new Vector3(armX + 0.06f, handY - 0.18f, -0.04f),
+                new Vector3(0.06f, 0.55f, 0.06f),
+                Quaternion.Euler(10f, 0f, 8f));
         }
 
-        /// <summary>
-        /// Cor padrão por classe para distinção visual rápida durante protótipo.
-        /// Pode ser substituída por texturas ou modelos ao amadurecer o projeto.
-        /// </summary>
         public static Color ClassColor(string playerClass) => playerClass?.ToLower() switch
         {
-            "warrior" => new Color(0.7f, 0.15f, 0.10f), // Vermelho escuro
-            "mage"    => new Color(0.15f, 0.20f, 0.85f), // Azul
-            "ranger"  => new Color(0.15f, 0.60f, 0.20f), // Verde
-            "healer"  => new Color(0.90f, 0.85f, 0.15f), // Amarelo
-            "bruiser" => new Color(0.50f, 0.30f, 0.10f), // Marrom
-            _         => new Color(0.75f, 0.75f, 0.75f), // Cinza (local / desconhecido)
+            "warrior" => new Color(0.65f, 0.15f, 0.10f),
+            "mage"    => new Color(0.18f, 0.22f, 0.80f),
+            "ranger"  => new Color(0.15f, 0.55f, 0.18f),
+            "healer"  => new Color(0.85f, 0.80f, 0.12f),
+            "bruiser" => new Color(0.48f, 0.28f, 0.08f),
+            _         => new Color(0.60f, 0.62f, 0.65f),
         };
 
-        // ─── Privado ──────────────────────────────────────────────────────────────
+        // ─── Helpers ──────────────────────────────────────────────────────────────
 
-        private static Material CreateMaterial(Color color)
+        private static Material Mat(Color c)
         {
-            // Tenta URP primeiro (Unity 6); fallback para Standard (HDRP / Built-in)
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit")
-                         ?? Shader.Find("Standard");
-
-            var mat = new Material(shader);
-            mat.color = color;
+            var s   = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            var mat = new Material(s) { color = c };
+            if (mat.HasProperty("_Smoothness"))  mat.SetFloat("_Smoothness",  0.20f);
+            else if (mat.HasProperty("_Glossiness")) mat.SetFloat("_Glossiness", 0.20f);
             return mat;
         }
 
-        private static GameObject AddPart(
-            GameObject parent,
-            string     partName,
-            PrimitiveType type,
-            Material   mat,
-            Vector3    pos,
-            Vector3    scale,
-            Quaternion rot = default)
+        private static void Setup(GameObject go, GameObject p, string n, Material mat,
+                                  Vector3 pos, Vector3 sc, Quaternion rot = default)
         {
-            var go = GameObject.CreatePrimitive(type);
-            go.name = partName;
-            go.transform.SetParent(parent.transform, false);
+            go.name = n;
+            go.transform.SetParent(p.transform, false);
             go.transform.localPosition = pos;
-            go.transform.localScale    = scale;
-            go.transform.localRotation = (rot == default) ? Quaternion.identity : rot;
-
-            // Material compartilhado
-            var rend = go.GetComponent<Renderer>();
-            if (rend != null) rend.sharedMaterial = mat;
-
-            // Remove colliders nos membros visuais — colisão tratada no servidor
+            go.transform.localScale    = sc;
+            go.transform.localRotation = rot == default ? Quaternion.identity : rot;
+            var r = go.GetComponent<Renderer>();
+            if (r) r.sharedMaterial = mat;
             var col = go.GetComponent<Collider>();
-            if (col != null) Object.Destroy(col);
+            if (col) Object.Destroy(col);
+        }
 
-            return go;
+        private static void Cube(GameObject p, string n, Material mat, Vector3 pos, Vector3 sc,
+                                  Quaternion rot = default)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            Setup(go, p, n, mat, pos, sc, rot);
+        }
+
+        private static void Cyl(GameObject p, string n, Material mat, Vector3 pos, Vector3 sc)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            Setup(go, p, n, mat, pos, sc);
+        }
+
+        private static void Sph(GameObject p, string n, Material mat, Vector3 pos, Vector3 sc)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            Setup(go, p, n, mat, pos, sc);
         }
     }
 }
