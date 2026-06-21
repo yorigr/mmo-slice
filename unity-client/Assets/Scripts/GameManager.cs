@@ -21,7 +21,7 @@ using MMORPG.Network;
 using MMORPG.Player;
 using MMORPG.World;
 using MMORPG.UI;
-// GroundSampler está em MMORPG.World — já importado acima
+// GroundSampler, MapGenerator estão em MMORPG.World — já importado acima
 // StickManBuilder e ItemWorldController estão em MMORPG
 
 namespace MMORPG
@@ -62,6 +62,9 @@ namespace MMORPG
 
         // GameObjects dos jogadores remotos, indexados por ID
         private readonly Dictionary<string, GameObject> _remotePlayerObjects = new();
+
+        // GameObjects dos NPCs estáticos (Ferreiro, Instrutor), indexados por id do NPC
+        private readonly Dictionary<string, NpcController> _npcObjects = new();
 
         // Estado do jogo
         private bool _gameStarted;
@@ -119,6 +122,8 @@ namespace MMORPG
             _net.OnEvent["mastery:levelup"]      = HandleMasteryLevelUp;
             _net.OnEvent["mastery:yellow_fame"]  = HandleMasteryYellowFame;
             _net.OnEvent["mastery:convert_result"] = HandleMasteryConvertResult;
+            // Resultado de usar poção: atualiza HP/mana via FloatingText antes do world:update
+            _net.OnEvent["item:use_result"]      = HandleItemUseResult;
 
             // Registra callbacks do WorldState para spawning de remotos
             if (_world != null)
@@ -147,6 +152,13 @@ namespace MMORPG
                 var uiGo = new GameObject("UIManager");
                 uiManager = uiGo.AddComponent<UIManager>();
             }
+
+            // Camera: tenta encontrar automaticamente se não foi atribuída no Inspector
+            if (cameraController == null)
+                cameraController = FindObjectOfType<CameraController>();
+
+            // Gera o mapa (terreno, árvores, rochas, construções, iluminação)
+            MapGenerator.Generate();
 
             // ChatUI precisa registrar o evento chat:message assim que NetworkManager conectar.
             // Registramos aqui (antes de Connect()) porque o NetworkManager pode já estar pronto.
@@ -217,13 +229,23 @@ namespace MMORPG
         private void HandlePlayerJoined(string json)
         {
             // Payload: { id, sessionToken, world, abilities:[...], gearOptions, state:{x,y,name,hp,...} }
-            _world?.HandlePlayerJoined(json);
 
+            // BUG FIX: LocalPlayerId deve ser definido ANTES de HandlePlayerJoined disparar
+            // OnPlayerJoined → SpawnRemotePlayer. Do contrário, o jogador local é
+            // brevemente spawnado como RemotePlayer porque SpawnRemotePlayer verifica
+            //   if (playerId == _world?.LocalPlayerId) return;
+            // e LocalPlayerId ainda era null nesse momento.
             var idPayload = JsonUtility.FromJson<IdExtract>(json);
             if (idPayload == null || string.IsNullOrEmpty(idPayload.id)) return;
 
-            // Se ainda não spawnamos o jogador local, este evento é nosso
-            if (string.IsNullOrEmpty(_world?.LocalPlayerId))
+            bool isLocalPlayer = string.IsNullOrEmpty(_world?.LocalPlayerId);
+            if (isLocalPlayer && _world != null)
+                _world.LocalPlayerId = idPayload.id;
+
+            // Agora o WorldState já conhece o ID local — SpawnRemotePlayer vai ignorar este evento
+            _world?.HandlePlayerJoined(json);
+
+            if (isLocalPlayer)
             {
                 AssignLocalPlayer(idPayload.id, json);
 
@@ -292,9 +314,9 @@ namespace MMORPG
             {
                 Vector3 pos = _localPlayerGO.transform.position;
                 if (data.xp > 0)
-                    FloatingText.Spawn(pos + Vector3.up * 0.3f, $"+{data.xp} XP", Color.cyan);
+                    FloatingText.Spawn(pos + Vector3.up * 0.3f, $"+{data.xp} XP",  FloatingText.Type.XP);
                 if (data.gold > 0)
-                    FloatingText.Spawn(pos + Vector3.up * 0.6f, $"+{data.gold} G", new Color(1f, 0.85f, 0f));
+                    FloatingText.Spawn(pos + Vector3.up * 0.6f, $"+{data.gold} G",  FloatingText.Type.Gold);
             }
         }
 
@@ -331,6 +353,15 @@ namespace MMORPG
                 return;
             }
 
+            // Destroi instância anterior (caso de reconexão após desconexão).
+            // Sem isso, cada reconexão acumularia clones de LocalPlayer na cena.
+            if (_localPlayerGO != null)
+            {
+                Destroy(_localPlayerGO);
+                _localPlayerGO  = null;
+                _localPlayerCtrl = null;
+            }
+
             // Extrai posição inicial do payload de join.
             // O servidor envia {id, world, abilities, state:{x,y,...}} — os dados de posição
             // estão dentro de "state", não no nível raiz.
@@ -352,8 +383,26 @@ namespace MMORPG
             if (_localPlayerCtrl == null)
                 Debug.LogError("[GameManager] PlayerController não encontrado no playerPrefab!");
 
+            // CharacterController — necessário para colisão com árvores/rochas/muros.
+            // Adicionado em runtime para não depender do prefab estar configurado.
+            // Dimensões: altura 1.1u (tronco+cabeça), raio 0.25u, centro em 0.55u do chão.
+            if (_localPlayerGO.GetComponent<CharacterController>() == null)
+            {
+                var cc = _localPlayerGO.AddComponent<CharacterController>();
+                cc.height        = 1.1f;
+                cc.radius        = 0.25f;
+                cc.center        = new Vector3(0f, 0.55f, 0f);
+                cc.slopeLimit    = 45f;
+                cc.stepOffset    = 0.3f;
+                cc.minMoveDistance = 0f;
+            }
+
             // Constrói o visual stick man para o jogador local
             StickManBuilder.Build(_localPlayerGO, StickManBuilder.ClassColor(playerClass));
+
+            // Animação procedural de walking (braços/pernas oscilam via Mathf.Sin)
+            if (_localPlayerGO.GetComponent<PlayerAnimator>() == null)
+                _localPlayerGO.AddComponent<PlayerAnimator>();
 
             // Nome tag acima da cabeça (branco = jogador local)
             string spawnNameForTag = !string.IsNullOrEmpty(stateData?.name) ? stateData.name : playerName;
@@ -364,6 +413,11 @@ namespace MMORPG
 
             // Configura a câmera para seguir o jogador
             cameraController?.SetTarget(_localPlayerGO.transform);
+
+            // Minimap: cria e aponta para o jogador local
+            var minimapGO = new GameObject("Minimap");
+            var minimap   = minimapGO.AddComponent<MMORPG.UI.MinimapController>();
+            minimap.SetTarget(_localPlayerGO.transform);
 
             // Registra ID local no WorldState
             if (_world != null)
@@ -385,8 +439,74 @@ namespace MMORPG
                 Debug.Log($"[GameManager] {skillList.Count} skills configuradas para {playerClass}.");
             }
 
+            // Spawna NPCs estáticos da zona (Ferreiro, Instrutor, etc.)
+            // Os NPCs vêm no array "npcs" do player:joined. Só spawna uma vez por zona.
+            if (_npcObjects.Count == 0)
+                SpawnNpcs(joinJson);
+
             _gameStarted = true;
             Debug.Log($"[GameManager] Jogador local spawnado. ID: {playerId} em {startPos}");
+        }
+
+        /// <summary>
+        /// Cria GameObjects para cada NPC recebido no payload player:joined.
+        /// Chamado apenas ao entrar numa zona (não repetido em reconexão se já spawnados).
+        /// </summary>
+        private void SpawnNpcs(string joinJson)
+        {
+            var payload = JsonUtility.FromJson<NpcListPayload>(joinJson);
+            if (payload?.npcs == null) return;
+
+            foreach (var npc in payload.npcs)
+            {
+                if (npc == null || string.IsNullOrEmpty(npc.id)) continue;
+                if (_npcObjects.ContainsKey(npc.id)) continue;
+
+                var ctrl = NpcController.Spawn(npc);
+                if (ctrl != null)
+                {
+                    _npcObjects[npc.id] = ctrl;
+                    Debug.Log($"[GameManager] NPC spawnado: {npc.name} ({npc.type}) em ({npc.x},{npc.y})");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Retorna a distância em pixels (coordenadas do servidor) entre o player
+        /// local e o NPC do tipo especificado. Retorna float.MaxValue se não encontrado.
+        /// Usado por PaperDollPanel/SkillTreePanel para habilitar botões de interação.
+        ///
+        /// Exemplo:
+        ///   float dist = GameManager.Instance.DistanceToNpc("blacksmith");
+        ///   bool perto = dist <= 120f; // BLACKSMITH_RANGE do servidor
+        /// </summary>
+        public float DistanceToNpc(string npcType)
+        {
+            if (_world == null) return float.MaxValue;
+            if (!_world.TryGetLocalPlayer(out var localPlayer)) return float.MaxValue;
+
+            // coords servidor: RemotePlayer.x e .z são Unity units (server/50);
+            // convertemos de volta para pixels multiplicando por 50.
+            float px = localPlayer.x * 50f;
+            float py = localPlayer.z * 50f;
+
+            foreach (var ctrl in _npcObjects.Values)
+            {
+                if (ctrl == null || ctrl.NpcType != npcType) continue;
+                var npcPos = ctrl.ServerPosition; // já em pixels servidor
+                float dx = npcPos.x - px;
+                float dy = npcPos.y - py;
+                return Mathf.Sqrt(dx * dx + dy * dy);
+            }
+            return float.MaxValue;
+        }
+
+        /// <summary>Remove todos os NPCs ao mudar de zona.</summary>
+        private void DespawnAllNpcs()
+        {
+            foreach (var ctrl in _npcObjects.Values)
+                if (ctrl != null) Destroy(ctrl.gameObject);
+            _npcObjects.Clear();
         }
 
         private void SpawnRemotePlayer(string playerId)
@@ -488,9 +608,9 @@ namespace MMORPG
                 Vector3? pos = ResolveEntityPosition(hit.to);
                 if (pos.HasValue)
                 {
-                    Color c = hit.crit ? new Color(1f, 0.5f, 0f) : Color.red;
-                    FloatingText.Spawn(pos.Value + Vector3.up * 0.4f, hit.damage.ToString(), c,
-                                       hit.crit ? 1.3f : 1f);
+                    string dmgText = hit.crit ? $"{hit.damage} CRIT!" : hit.damage.ToString();
+                    var    dmgType = hit.crit ? FloatingText.Type.Critical : FloatingText.Type.Damage;
+                    FloatingText.Spawn(pos.Value + Vector3.up * 0.4f, dmgText, dmgType);
                 }
             }
         }
@@ -546,21 +666,44 @@ namespace MMORPG
         private void HandleMasteryYellowFame(string json)  => _world?.HandleMasteryYellowFame(json);
         private void HandleMasteryConvertResult(string json) => _world?.HandleMasteryConvertResult(json);
 
-        // ─── Estruturas de parsing JSON ────────────────────────────────────────────
+        /// <summary>
+        /// Resultado de usar poção: mostra FloatingText de HP/mana ganhos.
+        /// O HUD já atualiza automaticamente via world:update (50ms depois),
+        /// então aqui só fazemos o feedback visual imediato.
+        /// Payload: { ok, itemId, effect:{hp,mana}, hp, mana, inventory }
+        /// </summary>
+        private void HandleItemUseResult(string json)
+        {
+            _world?.HandleInventoryUpdated(json); // atualiza inventário
 
-        [System.Serializable]
-        private class IdExtract { public string id; }
+            if (_localPlayerGO == null) return;
+            var data = ItemUseResultData.Parse(json);
+            if (data == null || !data.ok) return;
+
+            // FloatingText "+30 HP" em verde / "+40 Mana" em azul acima do player
+            var pos = _localPlayerGO.transform.position;
+            if (data.effectHp > 0)
+                FloatingText.Spawn(pos + Vector3.up * 0.5f, $"+{data.effectHp} HP",    FloatingText.Type.Heal);
+            if (data.effectMana > 0)
+                FloatingText.Spawn(pos + Vector3.up * 1.2f, $"+{data.effectMana} MP",  FloatingText.Type.XP);
+        }
+        // ═══════════════════════════════════════════════════════════════════════════
+        // Structs de deserialização JSON (JsonUtility — sem Newtonsoft)
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        [System.Serializable] private class IdExtract { public string id; }
 
         [System.Serializable]
         private class PlayerJoinData
         {
-            public StateData state;
+            public StateData  state;
             public SkillDef[] abilities;
         }
 
         [System.Serializable]
         private class StateData
         {
+            public string id;
             public string name;
             public float  x;
             public float  y;
@@ -574,6 +717,60 @@ namespace MMORPG
             public int    gold;
         }
 
+        /// <summary>Extrai a lista de NPCs do payload player:joined.</summary>
+        [System.Serializable]
+        private class NpcListPayload { public NpcData[] npcs; }
+
+        /// <summary>
+        /// Resultado de item:use. O campo effect é um objeto aninhado que JsonUtility
+        /// não serializa; usamos Parse() para extração manual de effect.hp / effect.mana.
+        /// </summary>
+        [System.Serializable]
+        private class ItemUseResultData
+        {
+            public bool   ok;
+            public string itemId;
+            public int    hp;
+            public int    mana;
+            [System.NonSerialized] public int effectHp;
+            [System.NonSerialized] public int effectMana;
+
+            public static ItemUseResultData Parse(string json)
+            {
+                var d = JsonUtility.FromJson<ItemUseResultData>(json);
+                if (d == null) return null;
+                d.effectHp   = ExtractNestedInt(json, "effect", "hp");
+                d.effectMana = ExtractNestedInt(json, "effect", "mana");
+                return d;
+            }
+
+            // Extrai um int de objeto aninhado: busca "obj" no json, depois "key" dentro dele.
+            private static int ExtractNestedInt(string json, string obj, string key)
+            {
+                int objIdx = json.IndexOf($"\"{obj}\"", System.StringComparison.Ordinal);
+                if (objIdx < 0) return 0;
+                int keyIdx = json.IndexOf($"\"{key}\"", objIdx, System.StringComparison.Ordinal);
+                if (keyIdx < 0) return 0;
+                int colon  = json.IndexOf(':', keyIdx);
+                if (colon  < 0) return 0;
+                int start  = colon + 1;
+                while (start < json.Length && json[start] == ' ') start++;
+                int end    = start;
+                while (end < json.Length && (char.IsDigit(json[end]) || json[end] == '-')) end++;
+                return end > start && int.TryParse(json[start..end], out int v) ? v : 0;
+            }
+        }
+
+        /// <summary>Payload de player:revived — ressuscita o jogador com HP/mana parcial.</summary>
+        [System.Serializable]
+        private class PlayerRevivedData
+        {
+            public string id;
+            public int    hp;
+            public int    mana;
+        }
+
+        /// <summary>Payload de player:xp — XP e gold ganhos em combate.</summary>
         [System.Serializable]
         private class PlayerXpData
         {
@@ -584,36 +781,34 @@ namespace MMORPG
             public int xpMax;
         }
 
+        /// <summary>Payload de player:level_up — novo nível com stats atualizados.</summary>
         [System.Serializable]
         private class PlayerLevelUpData
         {
             public int level;
             public int maxHp;
             public int maxMana;
-            public int speed;
+            public float speed;
             public int xp;
             public int xpMax;
         }
 
-        [System.Serializable]
-        private class PlayerRevivedData
-        {
-            public int   hp;
-            public float x;
-            public float y;
-        }
-
+        /// <summary>Payload de skill:result — resultado de uso de skill (cooldown em int).</summary>
         [System.Serializable]
         private class SkillResultData
         {
             public string skillId;
-            public string rejected; // nao-vazio => rejeitado
-            public bool   resolved;
-            public int    cooldown; // ms
+            public string rejected;   // mensagem de rejeição ou vazio
+            public string resolved;
+            public int    cooldown;   // int para compatibilidade com OnSkillResult(string, bool, int)
         }
 
+        /// <summary>Payload de item:picked — item coletado do chão.</summary>
         [System.Serializable]
-        private class ItemPickedData { public PickedItem item; }
+        private class ItemPickedData
+        {
+            public PickedItem item;
+        }
 
         [System.Serializable]
         private class PickedItem
@@ -624,28 +819,33 @@ namespace MMORPG
             public float  y;
         }
 
+/// <summary>Wrapper para array de hits de combate (combat:hits e um JSON array).</summary>
+        /// <summary>Wrapper para array de hits de combate.</summary>
         [System.Serializable]
-        private class CombatHitsWrapper { public CombatHit[] items; }
-
-        [System.Serializable]
-        private class CombatHit
+        private class CombatHitsWrapper
         {
-            public string from;
-            public string to;
-            public int    damage;
-            public bool   crit;
-            public int    hp;
-            public bool   isMonster;
+            public CombatHitItem[] items;
         }
 
         [System.Serializable]
-        private class CombatDeathsWrapper { public CombatDeath[] items; }
+        private class CombatHitItem
+        {
+            public string id;     // ID do alvo
+            public int    damage;
+            public bool   crit;
+        }
+
+        /// <summary>Wrapper para mortes em combate.</summary>
+        [System.Serializable]
+        private class CombatDeathsWrapper
+        {
+            public CombatDeathItem[] items;
+        }
 
         [System.Serializable]
-        private class CombatDeath
+        private class CombatDeathItem
         {
             public string id;
-            public string killerId;
         }
     }
 }
