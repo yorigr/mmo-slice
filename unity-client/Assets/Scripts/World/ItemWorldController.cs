@@ -4,7 +4,8 @@
 // Funcionamento:
 //   - A cada Update, sincroniza com WorldState.Items (atualizado pelo world:update a 20Hz).
 //   - Cada item vira uma pequena esfera colorida com label de nome flutuante.
-//   - Tecla E coleta o item mais próximo dentro do raio de coleta.
+//   - Tecla G coleta o item mais próximo dentro do raio de coleta.
+//     (E foi reservada para o slot de skill — use G para "grab".)
 //   - Emite item:pickup → servidor remove o item e adiciona ao inventário.
 //
 // Integração na cena:
@@ -17,6 +18,7 @@
 
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 using TMPro;
 using MMORPG.Network;
 using MMORPG.World;
@@ -69,7 +71,7 @@ namespace MMORPG
             SyncItems();
             BillboardLabels();
 
-            if (Input.GetKeyDown(KeyCode.E))
+            if (Input.GetKeyDown(KeyCode.G)) // G = grab; E está reservado para skill slot 3
                 TryPickupNearest();
         }
 
