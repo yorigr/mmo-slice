@@ -202,7 +202,7 @@ namespace MMORPG
             tmp.fontSize  = 24f; // em unidades do canvas (escalado para 0.01 = 0.24u visível)
             tmp.color     = Color.white;
             tmp.alignment = TextAlignmentOptions.Center;
-            tmp.enableWordWrapping = false;
+            tmp.textWrappingMode = TMPro.TextWrappingModes.NoWrap;
 
             var rect = textGO.GetComponent<RectTransform>();
             rect.sizeDelta = new Vector2(200f, 40f);
