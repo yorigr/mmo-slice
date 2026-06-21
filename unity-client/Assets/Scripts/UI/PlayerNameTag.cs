@@ -50,7 +50,7 @@ namespace MMORPG.UI
             _tmp.color             = color;
             _tmp.alignment         = TextAlignmentOptions.Center;
             _tmp.fontStyle         = FontStyles.Bold;
-            _tmp.enableWordWrapping = false;
+            _tmp.textWrappingMode = TMPro.TextWrappingModes.NoWrap;
 
             var rend = GetComponent<Renderer>();
             if (rend != null) rend.sortingOrder = 50;
