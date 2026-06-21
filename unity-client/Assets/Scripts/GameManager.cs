@@ -155,7 +155,7 @@ namespace MMORPG
 
             // Camera: tenta encontrar automaticamente se não foi atribuída no Inspector
             if (cameraController == null)
-                cameraController = FindObjectOfType<CameraController>();
+                cameraController = FindAnyObjectByType<CameraController>();
 
             // Gera o mapa (terreno, árvores, rochas, construções, iluminação)
             MapGenerator.Generate();
@@ -830,7 +830,8 @@ namespace MMORPG
         [System.Serializable]
         private class CombatHitItem
         {
-            public string id;     // ID do alvo
+            public string from;   // ID do atacante
+            public string to;     // ID do alvo
             public int    damage;
             public bool   crit;
         }
