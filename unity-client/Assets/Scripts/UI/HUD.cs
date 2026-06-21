@@ -162,7 +162,8 @@ namespace MMORPG.UI
         {
             var canvasGO = new GameObject("HUDCanvas");
             canvasGO.transform.SetParent(transform, false);
-            DontDestroyOnLoad(canvasGO);
+            // Não precisamos de DontDestroyOnLoad aqui — o jogo usa uma única cena;
+            // o GameManager pai já garante persistência dos objetos essenciais.
 
             var canvas = canvasGO.AddComponent<Canvas>();
             canvas.renderMode   = RenderMode.ScreenSpaceOverlay;
