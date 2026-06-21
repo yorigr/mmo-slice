@@ -96,7 +96,7 @@ namespace MMORPG.UI
             tmp.fontSize          = 13f;
             tmp.color             = Color.white;
             tmp.richText          = true;
-            tmp.enableWordWrapping = true;
+            tmp.textWrappingMode = TMPro.TextWrappingModes.Normal;
             tmp.overflowMode      = TextOverflowModes.Ellipsis;
 
             _messages.Enqueue((display, Time.time, tmp));
@@ -324,7 +324,7 @@ namespace MMORPG.UI
             _placeholder.fontSize  = 13f;
             _placeholder.color     = new Color(0.6f, 0.6f, 0.6f, 0.9f);
             _placeholder.fontStyle = FontStyles.Italic;
-            _placeholder.enableWordWrapping = false;
+            _placeholder.textWrappingMode = TMPro.TextWrappingModes.NoWrap;
             _input.placeholder = _placeholder;
 
             // Texto digitado
@@ -332,7 +332,7 @@ namespace MMORPG.UI
             var textTmp = textGO.AddComponent<TextMeshProUGUI>();
             textTmp.fontSize = 13f;
             textTmp.color    = Color.white;
-            textTmp.enableWordWrapping = false;
+            textTmp.textWrappingMode = TMPro.TextWrappingModes.NoWrap;
             _input.textComponent = textTmp;
             _input.textViewport  = textAreaGO.GetComponent<RectTransform>();
 
