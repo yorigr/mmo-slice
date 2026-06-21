@@ -1,9 +1,10 @@
 // PlayerNameTag.cs
-// Exibe o nome do jogador acima do stick man, sempre virado para a câmera.
+// Exibe o nome do jogador acima do personagem, sempre virado para a câmera.
 //
 // Uso:
-//   PlayerNameTag.Attach(playerGameObject, "Yuri", Color.white);
-//   PlayerNameTag.Attach(remoteGO, "Fulano", StickManBuilder.ClassColor("mage"));
+//   PlayerNameTag.Attach(playerGO, "Yuri", Color.white, characterHeight);
+//   characterHeight vem do retorno de CharacterBuilder.Build() —
+//   1.05f para StickMan, 1.85f para FBX (Universal Base Characters).
 //
 // A tag é criada proceduralmente como filho do GameObject do player.
 // Atualiza a rotação billboard a cada frame (Awake: create, Update: rotate).
@@ -15,9 +16,9 @@ namespace MMORPG.UI
 {
     public class PlayerNameTag : MonoBehaviour
     {
-        // Offset acima da cabeça do stick man (cabeça está em ~0.85u)
-        private const float HEIGHT_OFFSET = 1.05f;
-        private const float FONT_SIZE     = 0.07f;
+        // Margem extra acima do topo do personagem
+        private const float HEAD_MARGIN = 0.25f;
+        private const float FONT_SIZE   = 0.07f;
 
         private TextMeshPro _tmp;
 
@@ -26,7 +27,12 @@ namespace MMORPG.UI
         /// <summary>
         /// Adiciona (ou substitui) a name tag em <paramref name="playerGO"/>.
         /// </summary>
-        public static PlayerNameTag Attach(GameObject playerGO, string playerName, Color color)
+        /// <param name="characterHeight">
+        /// Altura do personagem em unidades Unity.
+        /// Use CharacterBuilder.FBX_HEIGHT ou CharacterBuilder.STICKMAN_HEIGHT.
+        /// </param>
+        public static PlayerNameTag Attach(GameObject playerGO, string playerName, Color color,
+                                           float characterHeight = CharacterBuilder.STICKMAN_HEIGHT)
         {
             // Remove tag anterior se existir
             var existing = playerGO.GetComponentInChildren<PlayerNameTag>();
@@ -34,7 +40,7 @@ namespace MMORPG.UI
 
             var tagGO = new GameObject("NameTag");
             tagGO.transform.SetParent(playerGO.transform, false);
-            tagGO.transform.localPosition = new Vector3(0f, HEIGHT_OFFSET, 0f);
+            tagGO.transform.localPosition = new Vector3(0f, characterHeight + HEAD_MARGIN, 0f);
 
             var tag = tagGO.AddComponent<PlayerNameTag>();
             tag.Build(playerName, color);
