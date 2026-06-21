@@ -1,19 +1,23 @@
 // CameraController.cs
-// Câmera isométrica 3D estilo Albion Online: rotação fixa, smooth follow, zoom com scroll.
+// Câmera 3D perspectiva estilo Albion Online / WoW: rotação fixa, smooth follow, zoom com scroll.
 //
-// Por que câmera ortográfica?
-//   Câmeras perspectivas distorcem objetos longe do centro — em jogos isométricos isso
-//   cria inconsistências visuais (tiles de tamanhos diferentes na tela). Câmera
-//   ortográfica mantém proporções consistentes em todo o campo de visão.
+// Por que câmera perspectiva (não ortográfica)?
+//   Ortográfica elimina a profundidade — objetos ao fundo parecem planos e o chão fica
+//   visível como um quadrilátero achatado. Perspectiva dá sensação de distância e volume,
+//   criando imersão comparável à do Albion Online e WoW.
 //
-// Ângulo de câmera X=30° (não X=45°):
-//   X=45° seria isométrico "matemático" (ângulos iguais), mas visualmente parece muito
-//   inclinado. X=30° é o padrão usado por Albion Online, Diablo III e a maioria dos
-//   ARPGs modernos — mais visibilidade horizontal e sensação mais natural.
+// Ângulo X=50°:
+//   X=30° (configuração anterior) é raso demais — vê-se o topo do chão em perspectiva quase
+//   isométrica pura, sem profundidade. X=50° inclina mais a câmera, aproximando-a do ângulo
+//   usado no Albion Online (~45-55°). O plano do chão desaparece atrás dos objetos e o
+//   mundo parece tridimensional.
+//
+// Zoom por distância (não FOV):
+//   Alterar o FOV ao dar zoom distorce a perspectiva ("dolly zoom"). Mover a câmera
+//   ao longo do vetor offset mantém a proporção natural dos objetos — é o que Albion faz.
 //
 // Rotação Y=45°:
-//   Rotaciona 45° em torno do eixo vertical para a visão diagonal característica
-//   dos jogos isométricos. Combinado com X=30° dá o ângulo clássico do gênero.
+//   Ângulo diagonal clássico do gênero isométrico. Mantido.
 
 using UnityEngine;
 
@@ -27,25 +31,32 @@ namespace MMORPG.Player
         [Tooltip("Transform do jogador a seguir. Pode ser atribuído em runtime pelo GameManager.")]
         public Transform Target;
 
+        [Header("Perspectiva")]
+        [Tooltip("Field of View da câmera. 60° é o padrão para câmera de ARPG/MMORPG.")]
+        [SerializeField] private float fieldOfView = 60f;
+
         [Header("Offset")]
-        [Tooltip("Posição da câmera relativa ao alvo. Com rot X=30°/Y=45°, " +
-                 "(-10, 14, -10) posiciona atrás e acima do jogador.")]
-        [SerializeField] private Vector3 offset = new Vector3(-10f, 14f, -10f);
+        [Tooltip("Posição base da câmera relativa ao alvo. Com rot X=50°/Y=45°, " +
+                 "(-10, 16, -10) aponta para o jogador a uma distância de ~22u.")]
+        [SerializeField] private Vector3 offset = new Vector3(-10f, 16f, -10f);
 
         [Header("Suavização")]
         [Tooltip("Velocidade do smooth follow. Menor = mais suave mas com mais atraso.")]
-        [SerializeField] private float followSmoothTime = 0.15f;
+        [SerializeField] private float followSmoothTime = 0.12f;
 
         [Header("Rotação (fixa)")]
-        [Tooltip("Rotação fixa da câmera. X=30° Y=45° é o padrão isométrico. " +
-                 "Altere no Inspector para experimentar, mas não exponha ao jogador.")]
-        [SerializeField] private Vector3 fixedRotation = new Vector3(30f, 45f, 0f);
+        [Tooltip("X=50° dá profundidade. Y=45° dá a diagonal isométrica. Não expor ao jogador.")]
+        [SerializeField] private Vector3 fixedRotation = new Vector3(50f, 45f, 0f);
 
-        [Header("Zoom")]
-        [SerializeField] private float zoomMin          = 5f;
-        [SerializeField] private float zoomMax          = 20f;
-        [SerializeField] private float zoomDefault      = 10f;
-        [SerializeField] private float zoomSpeed        = 3f;
+        [Header("Zoom (distância do alvo)")]
+        [Tooltip("Fator mínimo de zoom (mais perto do alvo).")]
+        [SerializeField] private float zoomMin          = 0.4f;
+        [Tooltip("Fator máximo de zoom (mais longe do alvo).")]
+        [SerializeField] private float zoomMax          = 2.2f;
+        [Tooltip("Fator de zoom padrão.")]
+        [SerializeField] private float zoomDefault      = 1.0f;
+        [Tooltip("Sensibilidade do scroll do mouse.")]
+        [SerializeField] private float zoomSpeed        = 0.12f;
         [Tooltip("Suavização do zoom. Menor = mais suave.")]
         [SerializeField] private float zoomSmoothTime   = 0.1f;
 
@@ -53,51 +64,48 @@ namespace MMORPG.Player
         private Camera _camera;
 
         // ─── Estado do smooth follow ──────────────────────────────────────────────
-        private Vector3 _velocity = Vector3.zero;  // Usado internamente pelo SmoothDamp
+        private Vector3 _velocity = Vector3.zero;
 
         // ─── Estado do zoom ───────────────────────────────────────────────────────
-        private float _targetZoom;
-        private float _zoomVelocity; // Usado internamente pelo SmoothDamp do zoom
+        // Zoom = fator multiplicado sobre o offset. 1.0 = distância padrão.
+        private float _zoomScale;
+        private float _targetZoomScale;
+        private float _zoomVelocity;
 
         // ─── Unity Lifecycle ──────────────────────────────────────────────────────
         private void Awake()
         {
             _camera = GetComponent<Camera>();
 
-            // Garante configuração ortográfica — se estiver em perspectiva no Editor, corrige
-            _camera.orthographic = true;
-            _camera.orthographicSize = zoomDefault;
-            _targetZoom = zoomDefault;
+            // Perspectiva: dá profundidade e imersão que ortográfica não oferece
+            _camera.orthographic = false;
+            _camera.fieldOfView  = fieldOfView;
 
-            // Aplica rotação fixa imediatamente (sem interpolação no início)
+            _zoomScale       = zoomDefault;
+            _targetZoomScale = zoomDefault;
+
             transform.rotation = Quaternion.Euler(fixedRotation);
         }
 
         private void LateUpdate()
         {
             // LateUpdate garante que o Follow roda DEPOIS do PlayerController mover o alvo.
-            // Se fizéssemos em Update, a câmera estaria um frame atrás do movimento.
-
             if (Target != null)
                 FollowTarget();
 
             HandleZoomInput();
             ApplyZoom();
 
-            // A rotação nunca muda em runtime — re-aplica para garantir que ninguém sobrescreveu
+            // Re-aplica rotação fixa para garantir que nada sobrescreveu
             transform.rotation = Quaternion.Euler(fixedRotation);
         }
 
         // ─── Follow ───────────────────────────────────────────────────────────────
         private void FollowTarget()
         {
-            // Posição desejada = alvo + offset (no espaço do mundo, não local)
-            // Por que não usar offset local? Porque a câmera tem rotação fixa e o offset
-            // em espaço mundo é mais intuitivo de ajustar no Inspector.
-            Vector3 desiredPosition = Target.position + offset;
+            // Offset escalado pelo fator de zoom — zoom in/out move a câmera para/contra o alvo
+            Vector3 desiredPosition = Target.position + offset * _zoomScale;
 
-            // SmoothDamp: suaviza o movimento sem over/undershooting.
-            // É preferível a Lerp(pos, target, t) que tem aceleração inconsistente por frame.
             transform.position = Vector3.SmoothDamp(
                 transform.position,
                 desiredPosition,
@@ -112,18 +120,17 @@ namespace MMORPG.Player
             float scroll = Input.GetAxis("Mouse ScrollWheel");
             if (Mathf.Abs(scroll) < 0.001f) return;
 
-            // ScrollWheel positivo = scroll para cima = aproximar (reduz orthographicSize)
-            // ScrollWheel negativo = scroll para baixo = afastar (aumenta orthographicSize)
-            _targetZoom -= scroll * zoomSpeed;
-            _targetZoom  = Mathf.Clamp(_targetZoom, zoomMin, zoomMax);
+            // Scroll para cima = aproximar (reduz o fator de distância)
+            // Scroll para baixo = afastar (aumenta o fator de distância)
+            _targetZoomScale -= scroll * zoomSpeed * 10f;
+            _targetZoomScale  = Mathf.Clamp(_targetZoomScale, zoomMin, zoomMax);
         }
 
         private void ApplyZoom()
         {
-            // SmoothDamp para zoom também — evita zoom abrupto
-            _camera.orthographicSize = Mathf.SmoothDamp(
-                _camera.orthographicSize,
-                _targetZoom,
+            _zoomScale = Mathf.SmoothDamp(
+                _zoomScale,
+                _targetZoomScale,
                 ref _zoomVelocity,
                 zoomSmoothTime
             );
@@ -138,22 +145,20 @@ namespace MMORPG.Player
         {
             Target = target;
 
-            // Teleporta a câmera para perto do alvo imediatamente (sem suavização inicial)
-            // para evitar o "slide" de inicialização de (0,0,0) até a posição do jogador
             if (target != null)
             {
-                transform.position = target.position + offset;
+                transform.position = target.position + offset * _zoomScale;
                 _velocity = Vector3.zero;
             }
         }
 
         /// <summary>
-        /// Snap imediato para a posição do alvo (sem smooth). Útil após teleporte do jogador.
+        /// Snap imediato para a posição do alvo (sem smooth). Útil após teleporte.
         /// </summary>
         public void SnapToTarget()
         {
             if (Target == null) return;
-            transform.position = Target.position + offset;
+            transform.position = Target.position + offset * _zoomScale;
             _velocity = Vector3.zero;
         }
 
@@ -162,10 +167,11 @@ namespace MMORPG.Player
         /// </summary>
         public void ResetZoom()
         {
-            _targetZoom = zoomDefault;
+            _targetZoomScale = zoomDefault;
         }
 
         // ─── Propriedades ─────────────────────────────────────────────────────────
-        public float CurrentZoom => _camera.orthographicSize;
+        /// <summary>Fator de zoom atual (1.0 = padrão).</summary>
+        public float CurrentZoom => _zoomScale;
     }
 }
