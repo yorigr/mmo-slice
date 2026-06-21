@@ -67,6 +67,12 @@ namespace MMORPG.Network
         private bool      _intentionalDisconnect;
         private float     _pingSentTime;
 
+        // Garante que apenas um SendAsync esteja ativo por vez no mesmo WebSocket.
+        // ClientWebSocket NÃO permite envios concorrentes — uma segunda chamada a
+        // SendAsync enquanto outra está pendente lança InvalidOperationException,
+        // o que faz o pong ser perdido e o servidor desconectar por pingTimeout.
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
+
         // Filas thread-safe para despachar para o main thread
         private readonly ConcurrentQueue<string> _messageQueue   = new();
         private readonly ConcurrentQueue<Action> _mainThreadQueue = new();
@@ -74,7 +80,14 @@ namespace MMORPG.Network
         // ─── Unity Lifecycle ──────────────────────────────────────────────────────
         private void Awake()
         {
-            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+            // Unity sobrescreve o operador == para MonoBehaviour: `Instance == null` retorna true
+            // mesmo quando a referência C# ainda existe mas o objeto foi destruído.
+            // Isso cobre tanto domain reload ativo quanto desabilitado (Enter Play Mode Settings).
+            if (Instance != null && Instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
             Instance = this;
             DontDestroyOnLoad(gameObject);
         }
@@ -179,11 +192,26 @@ namespace MMORPG.Network
 
             try
             {
-                await thisWs.ConnectAsync(new Uri(serverUrl), thisCts.Token);
+                // Timeout de 8s para não ficar pendurado indefinidamente se o servidor
+                // aceitar a conexão TCP mas não completar o handshake WebSocket.
+                using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    thisCts.Token, connectTimeout.Token);
+
+                await thisWs.ConnectAsync(new Uri(serverUrl), linkedCts.Token);
                 _mainThreadQueue.Enqueue(HandleOpen);
                 _ = ReceiveLoop(thisWs, thisCts);
             }
-            catch (OperationCanceledException) { /* shutdown intencional */ }
+            catch (OperationCanceledException)
+            {
+                if (!thisCts.IsCancellationRequested)
+                    // Timeout esgotado — tratar como falha, não como shutdown intencional
+                    Debug.LogWarning("[NetworkManager] ConnectAsync timeout (8s) — servidor não respondeu.");
+                else
+                    Debug.Log("[NetworkManager] Conexão cancelada intencionalmente.");
+                if (!thisCts.IsCancellationRequested)
+                    _mainThreadQueue.Enqueue(HandleConnectFailed);
+            }
             catch (Exception ex)
             {
                 Debug.LogError($"[NetworkManager] Falha ao conectar: {ex.Message}");
@@ -280,6 +308,7 @@ namespace MMORPG.Network
                 case SocketIOMessageType.Connect:
                     // "40" — Socket.IO confirmou a sessão. Seguro emitir agora.
                     _reconnectAttempt = 0;
+                    StopReconnect(); // Para o coroutine de reconexão — conexão confirmada
                     StartPing();
                     Debug.Log("[NetworkManager] Socket.IO conectado.");
                     OnConnected?.Invoke();
@@ -303,19 +332,46 @@ namespace MMORPG.Network
         private async void SendRaw(string message)
         {
             if (!IsConnected) return;
+
+            // Captura snapshots ANTES de qualquer await para que referências não mudem
+            // se uma reconexão iniciar enquanto esta chamada está pendente.
+            var ws  = _ws;
+            var cts = _cts;
+            if (ws == null || cts == null) return;
+
+            // Serializa envios: ClientWebSocket só permite um SendAsync ativo por vez.
+            // Sem esse lock, pong ("3") e player:move competem e um deles lança
+            // InvalidOperationException — o pong perdido causa "forced close" no servidor.
             try
             {
+                await _sendLock.WaitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return; // Conexão cancelada enquanto aguardava vez de enviar
+            }
+
+            try
+            {
+                // Re-valida: outro envio pode ter fechado o socket enquanto esperávamos.
+                if (ws.State != WebSocketState.Open || cts.IsCancellationRequested) return;
+
                 var bytes = Encoding.UTF8.GetBytes(message);
-                await _ws.SendAsync(
+                await ws.SendAsync(
                     new ArraySegment<byte>(bytes),
                     WebSocketMessageType.Text,
                     endOfMessage: true,
-                    cancellationToken: _cts?.Token ?? CancellationToken.None
+                    cancellationToken: cts.Token
                 );
             }
+            catch (OperationCanceledException) { /* shutdown intencional — não logar */ }
             catch (Exception ex)
             {
                 Debug.LogWarning($"[NetworkManager] SendRaw erro: {ex.Message}");
+            }
+            finally
+            {
+                _sendLock.Release();
             }
         }
 
@@ -347,10 +403,25 @@ namespace MMORPG.Network
                 Debug.Log($"[NetworkManager] Reconectando em {delay:F0}s (tentativa {_reconnectAttempt})...");
                 yield return new WaitForSeconds(delay);
 
-                if (!_intentionalDisconnect)
-                    _ = OpenWebSocket();
+                if (_intentionalDisconnect) yield break;
 
-                if (IsConnected) yield break;
+                _ = OpenWebSocket();
+
+                // Aguarda até 12s pela confirmação Socket.IO ("40") antes de tentar de novo.
+                // HandleMessage(Connect) chama StopReconnect() ao confirmar conexão —
+                // esse coroutine será interrompido antes de iterar se a conexão funcionar.
+                float waited = 0f;
+                while (!IsConnected && !_intentionalDisconnect && waited < 12f)
+                {
+                    yield return new WaitForSeconds(0.5f);
+                    waited += 0.5f;
+                }
+
+                if (IsConnected || _intentionalDisconnect) yield break;
+                // Se não conectou em 12s, o ConnectAsync timeout (8s) já chamou
+                // HandleConnectFailed → StartReconnect, que criou um novo coroutine.
+                // Este aqui pode sair com segurança.
+                yield break;
             }
         }
 
