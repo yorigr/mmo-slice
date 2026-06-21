@@ -369,8 +369,27 @@ io.on('connection', (socket) => {
   });
   // ping_rtt
   socket.on('ping_rtt', (ts) => socket.emit('pong_rtt', ts));
+
+  // Limpeza ao desconectar: remove o player da zona.
+  // Sem este handler, jogadores órfãos acumulam no mundo servidor após
+  // desconexões de rede (Play Mode stop, perda de conexão, etc.).
+  socket.on('disconnect', (reason) => {
+    const token = socketTokens.get(socket.id);
+    const zone  = zones.getZone(socket.id);
+
+    // Salva sessão antes de remover (30s de janela para reconexão)
+    if (token && zone) {
+      const p = zone.world.getPlayer(socket.id);
+      if (p) sessions.save(token, { state: { ...p } });
+    }
+
+    zones.leaveZone(socket);
+    socketTokens.delete(socket.id);
+
+    console.log(`  [disconnect] socket ${socket.id} — motivo: ${reason}`);
+  });
 });
 
-server.listen(PORT, () => {
+http.listen(PORT, () => {
   console.log(`[Servidor] Ouvindo na porta ${PORT}`);
 });
