@@ -257,7 +257,10 @@ namespace MMORPG.UI
             // Posição do mouse no mundo (plano XZ do servidor)
             (float tx, float ty) = GetMouseServerCoords();
 
-            _net.Emit("skill:use", $"{{\"skillId\":\"{sk.id}\",\"tx\":{tx:F1},\"ty\":{ty:F1}}}");
+            // InvariantCulture garante ponto decimal na rede (pt-BR usa vírgula e gera JSON inválido)
+            _net.Emit("skill:use", string.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                "{{\"skillId\":\"{0}\",\"tx\":{1:F1},\"ty\":{2:F1}}}", sk.id, tx, ty));
 
             // Pré-aplica cooldown localmente para UX responsiva
             float cdPre = sk.cooldown / 1000f;
