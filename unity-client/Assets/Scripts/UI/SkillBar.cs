@@ -320,7 +320,7 @@ namespace MMORPG.UI
             // Cria Canvas raiz
             var canvasGO = new GameObject("SkillBarCanvas");
             canvasGO.transform.SetParent(transform, false);
-            DontDestroyOnLoad(canvasGO);
+            // Não precisamos de DontDestroyOnLoad aqui — jogo usa uma única cena.
 
             var canvas = canvasGO.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
