@@ -200,7 +200,10 @@ namespace MMORPG.Player
             float sy  = transform.position.z * COORD_SCALE;
             string dir = DirectionToString(_currentDirection);
 
-            _net.Emit("player:move", $"{{\"x\":{sx:F1},\"y\":{sy:F1},\"dir\":\"{dir}\"}}");
+            // InvariantCulture garante ponto decimal na rede (pt-BR usa vírgula e gera JSON inválido)
+            _net.Emit("player:move", string.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                "{{\"x\":{0:F1},\"y\":{1:F1},\"dir\":\"{2}\"}}", sx, sy, dir));
         }
 
         /// <summary>
