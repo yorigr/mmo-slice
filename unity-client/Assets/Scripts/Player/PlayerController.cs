@@ -1,25 +1,21 @@
 // PlayerController.cs
-// Controla o jogador local com client-side prediction e reconciliação de posição.
+// Controla o jogador local com click-to-move (estilo Albion Online) e reconciliação
+// de posição com o servidor autoritativo.
 //
-// Client-Side Prediction (por que?):
-//   Em um servidor autoritativo a 20Hz (50ms de ciclo), se esperarmos a confirmação
-//   do servidor para mover, o jogador parece "lagado" mesmo com baixa latência.
-//   A solução é: mover localmente imediatamente, e corrigir suavemente se o servidor
-//   discordar. Isso é o que fazem Minecraft, Fortnite, Albion Online, etc.
+// Movimento:
+//   Botão direito do mouse (segurar) → define destino continuamente (como no Albion:
+//   o cursor age como um joystick enquanto o botão direito estiver pressionado).
+//   Ao soltar, o jogador continua até o último ponto e para sozinho.
 //
-// Fluxo:
-//   1. WASD pressionado → calcula nova posição localmente → aplica imediatamente
-//   2. Envia "player:move" ao servidor com a posição local
-//   3. Servidor retorna posição autoritativa via "world:update"
-//   4. Se diferença > threshold → interpola suavemente (não teletransporta)
+// Client-Side Prediction:
+//   O jogador se move localmente sem esperar confirmação do servidor.
+//   Se o servidor discordar, a posição é corrigida suavemente via lerp.
 //
 // Conversão de coordenadas:
-//   Servidor usa pixels: (x, y) com max (2400, 1800) — sistema 2D, sem elevação
-//   Unity usa unidades: (x, y, z) — Y vem do terreno via GroundSampler (raycast)
+//   Servidor usa pixels: (x, y) com max (2400, 1800)
+//   Unity usa unidades:  (x, y, z) — Y vem do terreno via GroundSampler
 //   Divisor XZ: 50  →  serverX / 50f = unityX,  serverY / 50f = unityZ
-//   Y (altura): amostrado do terreno Unity a cada frame — puramente visual, servidor não sabe
 
-using System;
 using UnityEngine;
 using MMORPG.Network;
 using MMORPG.World;
@@ -28,7 +24,6 @@ namespace MMORPG.Player
 {
     /// <summary>
     /// Direções cardinais e diagonais do movimento, usadas para animação futura.
-    /// Nomeadas em inglês para facilitar correspondência com assets de animação.
     /// </summary>
     public enum MoveDirection { None, North, NorthEast, East, SouthEast, South, SouthWest, West, NorthWest }
 
@@ -36,101 +31,161 @@ namespace MMORPG.Player
     {
         // ─── Constantes de conversão ──────────────────────────────────────────────
         /// <summary>
-        /// Divisor de escala entre servidor (pixels) e Unity (unidades).
-        /// Servidor: MAP_W=2400px → Unity: 48 unidades. 2400/48 = 50.
+        /// Divisor de escala: servidor usa pixels, Unity usa unidades.
+        /// MAP_W=2400px → 48u; 2400/48 = 50.
         /// </summary>
         private const float COORD_SCALE = 50f;
 
-        /// <summary>
-        /// Velocidade em pixels/segundo no servidor. Convertida para unidades Unity
-        /// multiplicando por 1/COORD_SCALE = 200/50 = 4 unidades/segundo.
-        /// </summary>
-        private const float SERVER_SPEED_PX = 200f;
-        private const float UNITY_SPEED     = SERVER_SPEED_PX / COORD_SCALE; // 4 u/s
+        /// <summary>Velocidade em unidades Unity/s (200px/s ÷ 50 = 4u/s).</summary>
+        private const float UNITY_SPEED = 200f / COORD_SCALE;
 
         // ─── Inspector ────────────────────────────────────────────────────────────
+        [Header("Click-to-Move")]
+        [Tooltip("Distância (unidades Unity) para considerar que chegou ao destino.")]
+        [SerializeField] private float arrivalThreshold = 0.25f;
+
+        [Tooltip("LayerMask do chão para o raycast de clique. " +
+                 "'Everything' funciona se não houver layer separada para o terreno.")]
+        [SerializeField] private LayerMask groundLayerMask = ~0;
+
         [Header("Reconciliação")]
-        [Tooltip("Distância mínima (unidades Unity) para iniciar correção de posição. " +
-                 "50px no servidor = 1 unidade Unity. Threshold de 2u = 100px de drift.")]
+        [Tooltip("Distância mínima (u) para corrigir desvio do servidor. 2u ≈ 100px.")]
         [SerializeField] private float reconcileThreshold = 2f;
 
-        [Tooltip("Velocidade da interpolação de correção (0=sem correção, 1=snap imediato). " +
-                 "0.2 por frame = suave mas responsivo.")]
+        [Tooltip("Velocidade da correção de posição (0=sem correção, 1=snap). 0.2 = suave.")]
         [SerializeField] [Range(0.01f, 1f)] private float reconcileLerpSpeed = 0.2f;
 
         [Header("Debug")]
         [SerializeField] private bool showDebugGizmos = true;
 
         // ─── Estado interno ───────────────────────────────────────────────────────
-        private Vector3         _serverAuthPosition;   // Última posição confirmada pelo servidor
-        private bool            _hasServerPosition;    // Se já recebemos ao menos uma posição
-        private MoveDirection   _currentDirection;
-        private bool            _isMoving;
-        private NetworkManager  _net;
+        private Camera              _cam;
+        private NetworkManager      _net;
+        private CharacterController _cc;   // Adicionado em runtime pelo GameManager
 
-        // Para enviar só quando há input (não spammar o servidor a cada frame parado)
-        private Vector3         _lastSentPosition;
-        private const float     SEND_THRESHOLD = 0.01f; // Mínimo de deslocamento para enviar
+        // Destino de click-to-move (null = parado)
+        private Vector3?       _destination;
+
+        // Reconciliação
+        private Vector3        _serverAuthPosition;
+        private bool           _hasServerPosition;
+
+        // Throttle de envio ao servidor
+        private Vector3        _lastSentPosition;
+        private const float    SEND_THRESHOLD = 0.05f;
+
+        // Estado de movimento público
+        private MoveDirection  _currentDirection;
+        private bool           _isMoving;
 
         // ─── Unity Lifecycle ──────────────────────────────────────────────────────
         private void Start()
         {
             _net = NetworkManager.Instance;
+            _cam = Camera.main;
+            _cc  = GetComponent<CharacterController>();
 
             if (_net == null)
-                Debug.LogError("[PlayerController] NetworkManager não encontrado! Coloque na cena.");
-
-            // Ouve o evento world:update para receber posição autoritativa
-            // GameManager injeta a posição inicial; aqui tratamos atualizações contínuas
+                Debug.LogError("[PlayerController] NetworkManager não encontrado!");
         }
 
         private void Update()
         {
             if (_net == null || !_net.IsConnected) return;
+            if (_cam == null) _cam = Camera.main;
 
             HandleInput();
         }
 
-        // ─── Input e movimento local ──────────────────────────────────────────────
+        // ─── Input ────────────────────────────────────────────────────────────────
+
         private void HandleInput()
         {
-            // Lê input bruto (sem normalização ainda)
-            float horizontal = Input.GetAxisRaw("Horizontal"); // A/D ou ←/→
-            float vertical   = Input.GetAxisRaw("Vertical");   // W/S ou ↑/↓
+            // Segurar botão direito atualiza o destino continuamente — exatamente como o
+            // Albion Online: o cursor funciona como um "joystick" de direção enquanto
+            // o botão direito estiver pressionado.
+            if (Input.GetMouseButton(1))
+                TrySetDestination();
 
-            _isMoving = horizontal != 0f || vertical != 0f;
+            MoveTowardDestination();
+        }
 
-            if (!_isMoving)
+        /// <summary>
+        /// Lança raycast do cursor ao chão e define o ponto de destino.
+        /// Se nenhum collider for atingido, usa interseção com o plano y=0.
+        /// </summary>
+        private void TrySetDestination()
+        {
+            if (_cam == null) return;
+
+            Ray ray = _cam.ScreenPointToRay(Input.mousePosition);
+
+            if (Physics.Raycast(ray, out RaycastHit hit, 300f, groundLayerMask))
             {
+                _destination = hit.point;
+                return;
+            }
+
+            // Fallback: plano y=0 (quando não há collider de chão)
+            if (Mathf.Abs(ray.direction.y) > 0.001f)
+            {
+                float t = -ray.origin.y / ray.direction.y;
+                if (t > 0f)
+                    _destination = ray.origin + ray.direction * t;
+            }
+        }
+
+        /// <summary>
+        /// Move o jogador em direção ao destino do clique.
+        /// Para automaticamente ao chegar dentro de <see cref="arrivalThreshold"/>.
+        /// </summary>
+        private void MoveTowardDestination()
+        {
+            if (_destination == null)
+            {
+                _isMoving = false;
                 _currentDirection = MoveDirection.None;
                 return;
             }
 
-            // Normaliza o vetor para evitar movimento diagonal mais rápido
-            Vector2 inputDir = new Vector2(horizontal, vertical).normalized;
+            Vector3 dest = _destination.Value;
+            Vector3 pos  = transform.position;
 
-            // Em câmera isométrica Y=45°, o input "W" deve mover na diagonal isométrica,
-            // não para cima na tela. Rotacionamos o input 45° para alinhar com a câmera.
-            // Com câmera fixa Y=45°, o "norte" na tela é a diagonal (x+, z+) no mundo.
-            Vector3 worldDir = IsoDirection(inputDir);
+            // Distância no plano XZ (Y é visual — não conta para decisão de chegada)
+            float distXZ = new Vector2(dest.x - pos.x, dest.z - pos.z).magnitude;
 
-            // Move localmente (prediction) — aplica antes da confirmação do servidor
-            // Só atualiza X e Z; Y será corrigido pelo SnapToGround abaixo
-            Vector3 next = transform.position + worldDir * UNITY_SPEED * Time.deltaTime;
+            if (distXZ < arrivalThreshold)
+            {
+                _destination = null;
+                _isMoving = false;
+                _currentDirection = MoveDirection.None;
+                return;
+            }
 
-            // Clamp dentro dos limites do mapa (X e Z)
+            // Direção planar (ignora Y para evitar jitter em terreno inclinado)
+            Vector3 dir = new Vector3(dest.x - pos.x, 0f, dest.z - pos.z).normalized;
+
+            _isMoving = true;
+            _currentDirection = GetMoveDirection(dir);
+
+            // Aplica movimento localmente (client prediction)
+            // CharacterController.Move() lida com colisão contra árvores/rochas/muros.
+            // Sem CharacterController (fallback), usa transform.position diretamente.
+            Vector3 next = pos + dir * UNITY_SPEED * Time.deltaTime;
             next = ClampToMap(next);
-
-            // Snaupa ao terreno: Y calculado por raycast sobre a geometria do chão.
-            // Fazemos isso a cada frame pois o jogador pode estar subindo/descendo rampas.
             next.y = GroundSampler.GetHeight(next.x, next.z);
 
-            transform.position = next;
+            if (_cc != null)
+            {
+                Vector3 delta = next - pos;
+                _cc.Move(delta);
+            }
+            else
+            {
+                transform.position = next;
+            }
 
-            // Determina direção para animação
-            _currentDirection = GetMoveDirection(worldDir);
-
-            // Envia ao servidor apenas se moveu o suficiente (evita flood)
+            // Envia ao servidor apenas se deslocou o suficiente (evita flood)
             if (Vector3.Distance(transform.position, _lastSentPosition) >= SEND_THRESHOLD)
             {
                 SendMoveToServer();
@@ -138,91 +193,49 @@ namespace MMORPG.Player
             }
         }
 
-        /// <summary>
-        /// Converte input 2D em direção 3D alinhada à câmera isométrica (Y=45°).
-        /// Na câmera iso com Y=45°: input "up" (vertical+) → mundo (X+, Z-)
-        ///                          input "right" (horizontal+) → mundo (X+, Z+)
-        /// </summary>
-        private static Vector3 IsoDirection(Vector2 input)
-        {
-            // Rotaciona 45° para alinhar com o ângulo da câmera
-            // Isso faz W mover "ao norte" na perspectiva isométrica
-            return new Vector3(
-                x: input.x + input.y,
-                y: 0f,
-                z: -input.x + input.y
-            ).normalized;
-        }
-
-        // ─── Envio de posição ao servidor ────────────────────────────────────────
+        // ─── Servidor ─────────────────────────────────────────────────────────────
         private void SendMoveToServer()
         {
-            // Converte posição Unity de volta para coordenadas do servidor (pixels)
-            float serverX = transform.position.x * COORD_SCALE;
-            float serverY = transform.position.z * COORD_SCALE;
+            float sx  = transform.position.x * COORD_SCALE;
+            float sy  = transform.position.z * COORD_SCALE;
+            string dir = DirectionToString(_currentDirection);
 
-            string dirString = DirectionToString(_currentDirection);
-
-            // Monta JSON manualmente — evita reflection do JsonUtility para estruturas simples
-            string json = $"{{\"x\":{serverX:F1},\"y\":{serverY:F1},\"dir\":\"{dirString}\"}}";
-            _net.Emit("player:move", json);
+            _net.Emit("player:move", $"{{\"x\":{sx:F1},\"y\":{sy:F1},\"dir\":\"{dir}\"}}");
         }
 
-        // ─── Reconciliação com servidor ───────────────────────────────────────────
-
         /// <summary>
-        /// Chamado pelo GameManager quando recebe a posição autoritativa do servidor.
-        /// serverX, serverY estão em pixels (coordenadas do servidor).
+        /// Chamado pelo GameManager com a posição autoritativa do servidor (pixels).
         /// </summary>
         public void ApplyServerPosition(float serverX, float serverY)
         {
-            // Usa GroundSampler para obter Y real do terreno na posição autoritativa.
-            // O servidor envia apenas (x, y) 2D — a altura é determinada pelo cliente.
             _serverAuthPosition = GroundSampler.ServerToUnity(serverX, serverY);
             _hasServerPosition  = true;
-
-            float drift = Vector3.Distance(transform.position, _serverAuthPosition);
-
-            if (drift > reconcileThreshold)
-            {
-                // Drift significativo: não faz snap (jarring), interpola suavemente.
-                // Se o servidor diz que estamos em outro lugar, é porque houve desync —
-                // o lerp gradual é imperceptível ao jogador, mas corrige o problema.
-                // O lerp é aplicado em LateUpdate para não brigar com o HandleInput.
-            }
-            else
-            {
-                // Drift dentro do tolerável — não corrige nada.
-                // A diferença de < 2 unidades é imperceptível ao jogador.
-            }
         }
 
         private void LateUpdate()
         {
-            // Aplicamos reconciliação em LateUpdate para que HandleInput já tenha rodado.
             if (!_hasServerPosition) return;
 
-            // Compara drift apenas no plano XZ — ignoramos Y porque altura é visual e
-            // muda constantemente com o terreno. Reconcilar Y causaria jitter.
+            // Reconciliação apenas no plano XZ — Y (terreno) não vem do servidor.
             Vector2 localXZ  = new Vector2(transform.position.x, transform.position.z);
             Vector2 serverXZ = new Vector2(_serverAuthPosition.x, _serverAuthPosition.z);
             float drift = Vector2.Distance(localXZ, serverXZ);
 
             if (drift > reconcileThreshold)
             {
-                // Interpola XZ suavemente; Y vem do terreno na posição interpolada
                 Vector3 lerped = Vector3.Lerp(transform.position, _serverAuthPosition, reconcileLerpSpeed);
                 lerped.y = GroundSampler.GetHeight(lerped.x, lerped.z);
-                transform.position = lerped;
+
+                if (_cc != null)
+                    _cc.Move(lerped - transform.position);
+                else
+                    transform.position = lerped;
             }
         }
 
         // ─── Conversão de coordenadas ─────────────────────────────────────────────
 
-        /// <summary>
-        /// Servidor (pixels) → Unity (unidades) com altura do terreno.
-        /// Y servidor → Z Unity; altura Unity Y via GroundSampler.
-        /// </summary>
+        /// <summary>Servidor (pixels) → Unity (unidades) com altura do terreno.</summary>
         public static Vector3 ServerToUnity(float sx, float sy)
             => GroundSampler.ServerToUnity(sx, sy, COORD_SCALE);
 
@@ -233,35 +246,31 @@ namespace MMORPG.Player
         // ─── Utilitários ──────────────────────────────────────────────────────────
         private static Vector3 ClampToMap(Vector3 pos)
         {
-            // MAP_W=2400, MAP_H=1800 em pixels → 48, 36 em unidades Unity
-            const float mapMaxX = 2400f / COORD_SCALE; // 48
-            const float mapMaxZ = 1800f / COORD_SCALE; // 36
-            // Y não é clampado aqui — vem do terreno via GroundSampler após o clamp XZ
+            const float maxX = 2400f / COORD_SCALE; // 48u
+            const float maxZ = 1800f / COORD_SCALE; // 36u
             return new Vector3(
-                Mathf.Clamp(pos.x, 0f, mapMaxX),
+                Mathf.Clamp(pos.x, 0f, maxX),
                 pos.y,
-                Mathf.Clamp(pos.z, 0f, mapMaxZ)
+                Mathf.Clamp(pos.z, 0f, maxZ)
             );
         }
 
         private static MoveDirection GetMoveDirection(Vector3 dir)
         {
-            // Usa atan2 para mapear o vetor de movimento para uma das 8 direções
             float angle = Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg;
-            // Normaliza para [0, 360)
             if (angle < 0) angle += 360f;
 
             return angle switch
             {
-                < 22.5f    => MoveDirection.North,
-                < 67.5f    => MoveDirection.NorthEast,
-                < 112.5f   => MoveDirection.East,
-                < 157.5f   => MoveDirection.SouthEast,
-                < 202.5f   => MoveDirection.South,
-                < 247.5f   => MoveDirection.SouthWest,
-                < 292.5f   => MoveDirection.West,
-                < 337.5f   => MoveDirection.NorthWest,
-                _          => MoveDirection.North
+                < 22.5f  => MoveDirection.North,
+                < 67.5f  => MoveDirection.NorthEast,
+                < 112.5f => MoveDirection.East,
+                < 157.5f => MoveDirection.SouthEast,
+                < 202.5f => MoveDirection.South,
+                < 247.5f => MoveDirection.SouthWest,
+                < 292.5f => MoveDirection.West,
+                < 337.5f => MoveDirection.NorthWest,
+                _        => MoveDirection.North
             };
         }
 
@@ -287,7 +296,15 @@ namespace MMORPG.Player
             Gizmos.color = Color.blue;
             Gizmos.DrawWireSphere(transform.position, 0.3f);
 
-            // Posição autoritativa do servidor — vermelho
+            // Destino do clique — verde
+            if (_destination.HasValue)
+            {
+                Gizmos.color = Color.green;
+                Gizmos.DrawSphere(_destination.Value, 0.2f);
+                Gizmos.DrawLine(transform.position, _destination.Value);
+            }
+
+            // Posicao autoritativa do servidor — vermelho
             if (_hasServerPosition)
             {
                 Gizmos.color = Color.red;
@@ -296,7 +313,7 @@ namespace MMORPG.Player
             }
         }
 
-        // ─── Propriedades para outros sistemas ───────────────────────────────────
+        // Propriedades publicas
         public MoveDirection CurrentDirection => _currentDirection;
         public bool IsMoving => _isMoving;
     }
