@@ -214,7 +214,7 @@ namespace MMORPG.UI
         /// </summary>
         public void OnSkillResult(string skillId, bool rejected, int cooldownMs)
         {
-            for (int i = 0; i < _skills.Count; i++)
+            for (int i = 0; i < _skills.Count && i < 6; i++)
             {
                 if (_skills[i].id != skillId) continue;
 
