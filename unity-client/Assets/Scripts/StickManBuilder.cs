@@ -85,16 +85,6 @@ namespace MMORPG
                 Quaternion.Euler(10f, 0f, 8f));
         }
 
-        public static Color ClassColor(string playerClass) => playerClass?.ToLower() switch
-        {
-            "warrior" => new Color(0.65f, 0.15f, 0.10f),
-            "mage"    => new Color(0.18f, 0.22f, 0.80f),
-            "ranger"  => new Color(0.15f, 0.55f, 0.18f),
-            "healer"  => new Color(0.85f, 0.80f, 0.12f),
-            "bruiser" => new Color(0.48f, 0.28f, 0.08f),
-            _         => new Color(0.60f, 0.62f, 0.65f),
-        };
-
         // ─── Helpers ──────────────────────────────────────────────────────────────
 
         private static Material Mat(Color c)
