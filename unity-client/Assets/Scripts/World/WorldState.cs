@@ -42,7 +42,6 @@ namespace MMORPG.World
         public int    stamina;
         public int    maxStamina;
         public bool   dead;
-        public string className; // "warrior", "mage", etc — para escolher prefab/material
         // Progressão
         public int    level;
         public int    xp;
@@ -117,7 +116,7 @@ namespace MMORPG.World
         // Formato de cada jogador no array (world:update do mmo-v1):
         // { "id":"abc", "name":"Yuri", "x":1200, "y":900, "hp":100, "maxHp":100,
         //   "mana":80, "maxMana":100, "stamina":100, "maxStamina":100,
-        //   "dead":false, "playerClass":"warrior", "level":1, "xp":0, "xpMax":100, "gold":0 }
+        //   "dead":false, "level":1, "xp":0, "xpMax":100, "gold":0 }
         [Serializable]
         private class PlayerData
         {
@@ -132,7 +131,6 @@ namespace MMORPG.World
             public int    stamina;
             public int    maxStamina;
             public bool   dead;
-            public string playerClass; // Servidor envia "playerClass" (alias de "class") para compatibilidade C#
             public int    level;
             public int    xp;
             public int    xpMax;
@@ -257,7 +255,6 @@ namespace MMORPG.World
                     stamina        = data.stamina,
                     maxStamina     = data.maxStamina > 0 ? data.maxStamina : 100,
                     dead           = data.dead,
-                    className      = data.playerClass ?? "warrior",
                     level          = data.level > 0 ? data.level : 1,
                     xp             = data.xp,
                     xpMax          = data.xpMax > 0 ? data.xpMax : 100,
@@ -378,7 +375,6 @@ namespace MMORPG.World
                 stamina        = hasState ? s.stamina : 100,
                 maxStamina     = hasState && s.maxStamina > 0 ? s.maxStamina : 100,
                 dead           = false,
-                className      = hasState ? (s.playerClass ?? "warrior") : "warrior",
                 level          = hasState && s.level > 0 ? s.level : 1,
                 xp             = hasState ? s.xp : 0,
                 xpMax          = hasState && s.xpMax > 0 ? s.xpMax : 100,
@@ -610,7 +606,6 @@ namespace MMORPG.World
             public int    maxMana;
             public int    stamina;
             public int    maxStamina;
-            public string playerClass;
             public int    level;
             public int    xp;
             public int    xpMax;
