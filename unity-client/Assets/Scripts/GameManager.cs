@@ -41,7 +41,6 @@ namespace MMORPG
 
         [Header("Configuração do jogador")]
         [SerializeField] private string playerName  = "Hero";
-        [SerializeField] private string playerClass = "warrior";
 
         [Header("Referências de cena")]
         [SerializeField] private CameraController      cameraController;
@@ -85,6 +84,8 @@ namespace MMORPG
         {
             _net   = NetworkManager.Instance;
             _world = WorldState.Instance;
+            if (_world == null)
+                Debug.LogError("[GameManager] WorldState não encontrado na cena. Sincronização de mundo desabilitada.");
 
             if (_net == null)
             {
@@ -135,6 +136,9 @@ namespace MMORPG
             // Cria componentes de UI se não atribuídos no Inspector
             if (skillBar == null)
                 skillBar = gameObject.AddComponent<SkillBar>();
+
+            if (hud == null)
+                hud = gameObject.AddComponent<HUD>();
 
             if (itemController == null)
                 itemController = gameObject.AddComponent<ItemWorldController>();
@@ -206,8 +210,7 @@ namespace MMORPG
         {
             Debug.Log("[GameManager] Conectado ao servidor. Enviando player:join...");
 
-            // Servidor lê "playerClass" (não "class" — palavra reservada no protocolo v1)
-            string json = $"{{\"name\":\"{playerName}\",\"playerClass\":\"{playerClass}\"}}";
+            string json = $"{{\"name\":\"{playerName}\"}}";
             _net.Emit("player:join", json);
         }
 
@@ -385,8 +388,7 @@ namespace MMORPG
 
             // Constrói o visual do personagem. CharacterBuilder tenta o FBX primeiro;
             // retorna a altura real do personagem (FBX ~1.85u, StickMan ~1.05u).
-            string gender    = CharacterBuilder.ClassToGender(playerClass);
-            float charHeight = CharacterBuilder.Build(_localPlayerGO, StickManBuilder.ClassColor(playerClass), gender);
+            float charHeight = CharacterBuilder.Build(_localPlayerGO, Color.white);
 
             // CharacterController — dimensões baseadas na altura real do personagem.
             // Adicionado em runtime para não depender do prefab estar configurado.
@@ -437,7 +439,7 @@ namespace MMORPG
             {
                 var skillList = new System.Collections.Generic.List<SkillDef>(data.abilities);
                 skillBar?.Configure(skillList);
-                Debug.Log($"[GameManager] {skillList.Count} skills configuradas para {playerClass}.");
+                Debug.Log($"[GameManager] {skillList.Count} skills configuradas.");
             }
 
             // Spawna NPCs estáticos da zona (Ferreiro, Instrutor, etc.)
@@ -530,11 +532,10 @@ namespace MMORPG
             go.name = $"RemotePlayer_{playerData.name}";
 
             // Constrói visual do remoto com FBX (ou StickMan como fallback)
-            string remoteGender = CharacterBuilder.ClassToGender(playerData.className);
-            float  remoteHeight = CharacterBuilder.Build(go, StickManBuilder.ClassColor(playerData.className), remoteGender);
+            float  remoteHeight = CharacterBuilder.Build(go, Color.white);
 
-            // Nome tag na cor da classe — altura ajustada para o modelo real
-            PlayerNameTag.Attach(go, playerData.name, StickManBuilder.ClassColor(playerData.className), remoteHeight);
+            // Nome tag do remoto — altura ajustada para o modelo real
+            PlayerNameTag.Attach(go, playerData.name, Color.white, remoteHeight);
 
             _remotePlayerObjects[playerId] = go;
             Debug.Log($"[GameManager] Jogador remoto spawnado: {playerData.name} ({playerId})");
