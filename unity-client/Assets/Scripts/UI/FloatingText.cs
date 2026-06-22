@@ -106,11 +106,12 @@ namespace MMORPG.UI
             _elapsed += Time.deltaTime;
 
             // Movimento: sobe e deriva levemente
-            float drift = _elapsed * 0.5f; // desacelera a deriva com o tempo
+            // driftFactor reduz de 1→0 ao longo do LIFETIME (frame-rate independent)
+            float driftFactor = Mathf.Clamp01(1f - _elapsed / LIFETIME);
             transform.position += new Vector3(
-                _driftX * (1f - drift),
+                _driftX * driftFactor * Time.deltaTime,
                 RISE_SPEED * Time.deltaTime,
-                _driftZ * (1f - drift)
+                _driftZ * driftFactor * Time.deltaTime
             );
 
             // Billboard — sempre de frente para a câmera
