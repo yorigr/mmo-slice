@@ -136,6 +136,12 @@ namespace MMORPG.World
             go.transform.localScale = new Vector3(MAP_W / 10f, 1f, MAP_H / 10f);
             go.transform.position   = new Vector3(MAP_W * 0.5f, 0f, MAP_H * 0.5f);
             ApplyMaterial(go, GrassColor, _texGrass, tilingX: 12f, tilingY: 9f);
+
+            int groundLayer = LayerMask.NameToLayer("Ground");
+            if (groundLayer >= 0)
+                go.layer = groundLayer;
+            else
+                Debug.LogWarning("[MapGenerator] Layer 'Ground' não existe no projeto. Crie via Edit → Project Settings → Tags and Layers.");
         }
 
         // ─── Área urbana ──────────────────────────────────────────────────────────
