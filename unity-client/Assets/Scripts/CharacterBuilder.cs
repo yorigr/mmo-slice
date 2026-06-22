@@ -31,8 +31,7 @@ namespace MMORPG
         /// </summary>
         /// <param name="parent">GameObject raiz do jogador (LocalPlayer / RemotePlayer).</param>
         /// <param name="armorColor">Cor de tint para o StickMan; não aplicada sobre o FBX.</param>
-        /// <param name="gender">"male" ou "female" — determina qual FBX carregar.</param>
-        public static float Build(GameObject parent, Color armorColor, string gender = "male")
+        public static float Build(GameObject parent, Color armorColor)
         {
             if (parent == null) return STICKMAN_HEIGHT;
 
@@ -41,9 +40,7 @@ namespace MMORPG
                 Object.Destroy(parent.transform.GetChild(i).gameObject);
 
             // ── Tenta FBX ────────────────────────────────────────────────────────
-            string fbxPath = gender == "female"
-                ? "Characters/Superhero_Female_FullBody"
-                : "Characters/Superhero_Male_FullBody";
+            string fbxPath = "Characters/Superhero_Male_FullBody";
 
             var prefab = Resources.Load<GameObject>(fbxPath);
             if (prefab != null)
@@ -67,13 +64,6 @@ namespace MMORPG
             StickManBuilder.Build(parent, armorColor);
             return STICKMAN_HEIGHT;
         }
-
-        /// <summary>
-        /// Mapeia playerClass para gênero do personagem (para escolher o FBX correto).
-        /// Mago e ranger → female; demais → male.
-        /// </summary>
-        public static string ClassToGender(string playerClass) =>
-            playerClass is "mage" or "ranger" ? "female" : "male";
 
         // ─── Helpers ──────────────────────────────────────────────────────────────
 
