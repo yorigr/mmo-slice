@@ -151,7 +151,7 @@ namespace MMORPG.UI
             _pingText.color = ms < 80 ? Color.green : ms < 200 ? Color.yellow : Color.red;
         }
 
-        public void SetClassColor(Color c)
+        public void SetPortraitBorderColor(Color c)
         {
             if (_portraitBorder != null) _portraitBorder.color = c;
         }
